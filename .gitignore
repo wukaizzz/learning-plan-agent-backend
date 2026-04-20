@@ -1,0 +1,62 @@
+# 日志
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 依赖目录
+node_modules/
+.pnpm-store/
+.pnpm/
+
+# 编辑器
+.idea
+.vscode/
+*.swp
+*.swo
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 环境变量
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 构建产物
+dist/
+dist-ssr/
+build/
+output/
+coverage/
+*.local
+
+# 系统文件
+Thumbs.db
+$RECYCLE.BIN/
+Desktop.ini
+*.cab
+*.msi
+*.msix
+*.msm
+*.tmp
+*.temp
+
+# 服务端
+.env.*
+!.env.example
+
+# 测试
+coverage/
+.nyc_output/
+
+# 其他缓存
+*.tsbuildinfo
