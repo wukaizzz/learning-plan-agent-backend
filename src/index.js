@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import chatRouter from './routes/chat.js';
 import doubaoRouter from './routes/doubao.js';
 import toolRouter from './routes/tool.js';
+import workflowRouter from './routes/workflowRoutes.js';
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ app.use(express.json());
 app.use('/api/chat', chatRouter);
 app.use('/api/doubao', doubaoRouter);
 app.use('/api/tool', toolRouter);
+app.use('/api/workflows', workflowRouter);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -26,8 +28,10 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     services: {
       deepseek: !!process.env.DEEPSEEK_API_KEY,
-      doubao: !!process.env.ARK_API_KEY
-    }
+      doubao: !!process.env.ARK_API_KEY,
+      langgraph: true // Phase 1 基础设施已就绪
+    },
+    version: '1.1.0'
   });
 });
 

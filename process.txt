@@ -1,0 +1,85 @@
+1 核心差异化亮点
+动态重规划
+普通学习计划产品根据截止时间生成时间表，但亮点应该是：计划不是静态结果，而是会随着执行反馈持续重排的动态系统。orkes+1
+用户说"这两天没学完"或"高数正确率持续低"，系统直接重算后续任务权重、压缩非关键任务、生成新的计划版本。reddit+1
+Agent 工作流界面
+Agent 输出的是工作流状态和结构化 UI 事件，而不是一长段回复。learn.microsoft
+前端可以实时看到 Agent 正处于哪个步骤、为什么暂停、接下来需要用户补什么信息、输出了哪些结构化结果。orkes+1
+可恢复的系统
+有 study_spaces + plan_versions + chat_messages + tasks 结构，每个学习目标都是一个可持续演进的空间，Agent 可以在这个空间里恢复上下文并继续工作。orkes
+可解释的决策链
+Agent 不仅给出计划，还会展示决策依据，如哪些科目被提高优先级、为什么某天任务减少。devrev+1
+把这些解释做成 risk-alert、summary-card、action-bar 的一部分，是"解释型 UI"。
+中断 / 继续 / 分支
+系统生成到一半发现"用户没有提供考试日期"，可以暂停在 collect_missing_info 阶段，等用户补完再继续。learn.microsoft
+Interrupt/resume 能力说明系统不是一次性 completion，而是带状态的流程执行器。orkes+1
+计划版本对比
+展示"v1 → v2 → v3 为什么变化"，如新增了哪些任务、哪些任务被压缩。vellum+1
+展示的是 Agent 的决策轨迹，而不是普通 CRUD。orkes
+学习风险预测
+根据剩余天数、总任务量、完成率、弱项权重，主动判断"当前计划大概率无法完成"并触发风险提示。cs229.stanford+1
+2 LangGraph 工作流设计
+LangGraph 不是用来"生成学习计划文本"，而是作为学习 Agent 的"状态工作流内核"。langchain+1
+角色定位：后端的大脑调度器；React + TypeScript 前端继续负责 schema-driven block 渲染。langchain+1
+四大使用方向
+学习计划生成工作流
+"收集信息 → 判断是否完整 → 生成计划 → 输出结构化 block"做成图流程。js-craft+1
+节点明确为：collect_profile、check_missing_info、generate_plan、format_blocks
+动态重排工作流
+读取当前计划、完成情况和约束变化，经过判断后重新规划，生成新的计划版本。leanware+1
+第二条图：detect_deviation -> assess_risk -> replan_tasks -> generate_new_version -> output_blocks。activewizards+1
+人机协同中断恢复
+LangGraph 的 interrupt 支持在节点内部 interrupt()，暂停执行并等待外部输入，再通过 Command({ resume }) 继续。langchain
+适用场景：
+- 缺考试日期，暂停，等用户补信息
+- 检测到计划冲突，暂停，问用户优先保哪一科
+- 用户说"周三晚上不能学"，暂停后等待新的时间约束
+这让 Agent 明显比普通聊天机器人更像真正的工作流系统。dev
+状态持久化与多学习空间
+LangGraph 内置 checkpointer，把 graph state 保存成 checkpoint，通过 thread_id 恢复上下文。langchain+1
+每个学习空间 = 一个 graph thread，每个空间有自己的状态流、中断点、计划版本演进。leanware
+系统分层
+前端层
+- 学习空间页面
+- workflow 提示条
+- block 渲染器，按类型映射组件
+- 用户操作入口："重新规划""跳过今天""调整可用时间"
+LangGraph 层
+- 保存当前学习空间的运行状态leanware
+- 根据状态选择工作流分支js-craft
+- 在需要用户确认或补信息时 interruptlangchain
+- 调用模型、规则函数、任务重排器，输出结构化结果。langchain+1
+前端负责展示和交互，LangGraph 负责流程推进和状态决策。langchain+1
+LangGraph State 设计
+第一版可包含：
+- studySpaceId：当前学习空间 id
+- goal：目标，如高数期末冲刺
+- examDate：考试或截止时间
+- subjects：学科及优先级
+- availability：可学习时间
+- currentPlanVersionId：当前计划版本
+- tasksSnapshot：任务快照，用于重排
+- progressSummary：执行情况摘要
+- riskLevel：风险等级
+- workflowStage：collect / planning / reviewing / replanning
+- uiBlocks：最终给前端的结构化 block
+- pendingQuestion：当前是否中断等待用户输入langchain
+推荐的 3 条工作流
+图一：首次生成计划
+load_space_context -> collect_missing_info -> generate_plan -> create_plan_version -> build_ui_blocks -> endlangchain
+信息缺失时在 collect_missing_info 节点中断。langchain
+图二：执行偏差后的自动重排
+load_progress -> detect_deviation -> assess_risk -> replan -> save_new_version -> build_ui_blocks -> end。activewizards+1
+体现"动态重排学习计划"的核心亮点。
+图三：人机协同调整
+receive_user_feedback -> classify_feedback -> update_constraints -> maybe_interrupt_for_confirmation -> replan -> build_ui_blocks -> end。dev+1
+处理"我周三晚上没空""英语不用这么多时间"等真实反馈。
+结构化 block 的位置
+Agent 返回的 summary-card、study-timeline、daily-task-list、progress-panel、risk-alert、action-bar 等 block，放在最后一个或倒数第二个节点统一生成。
+由 build_ui_blocks 节点把当前 state 映射成前端可消费的 schema，符合 schema-driven 思路。langchain
+落地顺序建议
+1. 先接入首次生成计划图langchain
+2. 跑通 thread_id = studySpaceId 的持久化方式。langchain+1
+3. 在 collect_missing_info 做第一个 interrupt。langchain
+4. 把"未完成任务后重排"接成第二条图。activewizards
+5. 把 block 输出统一接到 build_ui_blocks

@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { workflowEventGenerator } from './workflowService.js';
 
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
+const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions';
 
 export async function streamDeepSeekChat(messages, agentConfig, onChunk) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -13,7 +14,28 @@ export async function streamDeepSeekChat(messages, agentConfig, onChunk) {
   const temperature = agentConfig?.temperature || 0.7;
   const maxTokens = agentConfig?.max_tokens || 1024;
 
+  // 检查是否启用工作流事件
+  const enableWorkflow = agentConfig?.enableWorkflow !== false; // 默认启用
+
   try {
+    // 如果启用工作流且是用户消息，先生成工作流事件
+    if (enableWorkflow && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'user') {
+        // 异步生成工作流事件
+        (async () => {
+          try {
+            for await (const event of workflowEventGenerator.generateEventsFromMessage(lastMessage.content)) {
+              onChunk(event);
+            }
+          } catch (error) {
+            console.error('Workflow event generation error:', error);
+          }
+        })();
+      }
+    }
+
+    // 调用DeepSeek API
     const response = await axios.post(DEEPSEEK_API_URL, {
       model: 'deepseek-chat',
       messages: [
@@ -49,18 +71,26 @@ export async function streamDeepSeekChat(messages, agentConfig, onChunk) {
           }
 
           try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
+            // ✅ 安全解析：先清理SSE格式，检查是否为空或[DONE]
+            let cleanChunk = data.trim();
 
-            if (content) {
-              fullContent += content;
-              onChunk({
-                type: 'content',
-                content
-              });
+            // 只在不是空且不是[DONE]时才解析
+            if (cleanChunk && cleanChunk !== '[DONE]') {
+              const parsed = JSON.parse(cleanChunk);
+              const content = parsed.choices?.[0]?.delta?.content;
+
+              if (content) {
+                fullContent += content;
+                onChunk({
+                  type: 'content',
+                  content
+                });
+              }
             }
           } catch (e) {
-            console.error('Failed to parse chunk:', e);
+            // 忽略不完整的流式chunk，继续处理下一个
+            console.log('忽略不完整的流式chunk:', e.message);
+            continue;
           }
         }
       }
