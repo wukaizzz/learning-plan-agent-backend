@@ -619,7 +619,7 @@ export async function runInitialPlanning(studySpaceId, userId, initialState = {}
     ...initialState
   };
 
-  // 创建并执行工作流
+  // 构建工作流并编译
   const workflow = createInitialPlanningWorkflow();
 
   // 执行工作流（不使用 checkpointer，单次执行）

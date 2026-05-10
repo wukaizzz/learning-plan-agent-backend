@@ -73,7 +73,7 @@ router.post('/spaces/:spaceId/start-planning', async (req, res) => {
  * 恢复中断的工作流
  * POST /api/workflows/:threadId/resume
  */
-router.post('/workflows/:threadId/resume', async (req, res) => {
+router.post('/:threadId/resume', async (req, res) => {
   try {
     const { threadId } = req.params;
     const userInput = req.body;
@@ -161,7 +161,7 @@ router.post('/spaces/:spaceId/replan', async (req, res) => {
  * 获取当前工作流状态
  * GET /api/workflows/:threadId/state
  */
-router.get('/workflows/:threadId/state', async (req, res) => {
+router.get('/:threadId/state', async (req, res) => {
   try {
     const { threadId } = req.params;
     
@@ -190,7 +190,7 @@ router.get('/workflows/:threadId/state', async (req, res) => {
  * 提交用户反馈
  * POST /api/workflows/:threadId/feedback
  */
-router.post('/workflows/:threadId/feedback', async (req, res) => {
+router.post('/:threadId/feedback', async (req, res) => {
   try {
     const { threadId } = req.params;
     const { feedback } = req.body;
@@ -224,7 +224,7 @@ router.post('/workflows/:threadId/feedback', async (req, res) => {
  * 获取工作流执行历史
  * GET /api/workflows/:threadId/history
  */
-router.get('/workflows/:threadId/history', async (req, res) => {
+router.get('/:threadId/history', async (req, res) => {
   try {
     const { threadId } = req.params;
 

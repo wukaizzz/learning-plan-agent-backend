@@ -100,7 +100,7 @@ export async function streamChat(req, res) {
         sendWorkflowEvent(res, 'info_needed', {
           question: result.interruption.waitingFor?.question,
           field: result.interruption.waitingFor?.field,
-          type: result.interruption.waitingFor?.type,
+          type: result.interruption.waitingFor?.ty,
           options: result.interruption.waitingFor?.options
         });
 
