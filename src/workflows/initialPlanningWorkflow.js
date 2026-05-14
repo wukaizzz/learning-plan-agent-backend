@@ -4,6 +4,7 @@
  */
 
 import { StateGraph, END, Annotation } from '@langchain/langgraph';
+import { checkpointer } from '../utils/checkpointer.js';
 import { createInitialState } from '../types/workflowState.js';
 
 // ============================================================
@@ -227,18 +228,26 @@ async function analyzeStudyRequirements(state) {
 
   const { goal, subjects, availability } = state;
 
+  // ✅ 验证必要数据是否存在
+  if (!goal.examDate || !goal.targetScore || !subjects || subjects.length === 0) {
+    console.warn('⚠️ [analyzeStudyRequirements] 缺少必要数据，使用默认值');
+  }
+
   // 构建分析提示词
   const analysisPrompt = `
 请分析以下学习情况并给出建议：
 
-学习目标：${goal.primaryGoal}
+学习目标：${goal.primaryGoal || '未知'}
 考试日期：${goal.examDate || '未设置'}
 目标分数：${goal.targetScore || '未设置'}
 距离考试：${availability.examDistance} 天
 每日可用时间：${availability.dailyHours} 小时
 
 科目信息：
-${subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10`).join('\n')}
+${subjects.length > 0
+  ? subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10`).join('\n')
+  : '无科目信息'
+}
 
 请分析：
 1. 时间是否充足（计算所需总学习时间）
@@ -247,27 +256,37 @@ ${subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水
 4. 风险提示
 `;
 
+  console.log('📝 [analyzeStudyRequirements] 分析提示词:', analysisPrompt);
+
   // TODO: 调用 AI 模型
   // const analysisResult = await callDeepSeek(analysisPrompt);
 
-  // 模拟 AI 分析结果
+  // ✅ 改进的模拟 AI 分析结果（基于真实数据）
   const analysisResult = {
     timeAssessment: availability.examDistance * availability.dailyHours >= 60 ? '充足' : '紧张',
-    subjectPriorities: subjects.map(s => ({
+    subjectPriorities: subjects.length > 0 ? subjects.map(s => ({
       ...s,
       priorityLevel: s.targetLevel - s.currentLevel >= 2 ? 'high' : 'medium'
-    })),
-    strategy: `建议优先攻克${subjects[0]?.name || '主要科目'}，每日分配${Math.floor(availability.dailyHours * 0.6)}小时`,
+    })) : [],
+    strategy: subjects.length > 0
+      ? `建议优先攻克${subjects[0]?.name || '主要科目'}，每日分配${Math.floor(availability.dailyHours * 0.6)}小时`
+      : '请先添加科目信息',
     risks: []
   };
 
+  // ✅ 基于真实数据的风险评估
   if (availability.examDistance < 7 && subjects.length > 2) {
     analysisResult.risks.push('时间紧迫，建议聚焦重点科目');
   }
 
+  if (!goal.examDate) {
+    analysisResult.risks.push('未设置考试日期，无法准确规划');
+  }
+
   console.log(`📊 [analyzeStudyRequirements] 分析完成`, {
     timeAssessment: analysisResult.timeAssessment,
-    risksCount: analysisResult.risks.length
+    risksCount: analysisResult.risks.length,
+    subjectCount: subjects.length
   });
 
   return {
@@ -596,10 +615,10 @@ export function createInitialPlanningWorkflow() {
   workflow.addEdge('generate_plan', 'build_ui_blocks');
   workflow.addEdge('build_ui_blocks', END);
 
-  // 编译工作流
-  const compiledWorkflow = workflow.compile();
+  // ✅ 编译工作流，带 checkpointer
+  const compiledWorkflow = workflow.compile({ checkpointer });
 
-  console.log('✅ 首次计划生成工作流已构建');
+  console.log('✅ 首次计划生成工作流已构建（支持 checkpointer）');
   return compiledWorkflow;
 }
 
@@ -610,7 +629,7 @@ export function createInitialPlanningWorkflow() {
  * @param {Partial<StudySpaceWorkflowState>} initialState - 可选的初始状态
  * @returns {Promise<StudySpaceWorkflowState>}
  */
-export async function runInitialPlanning(studySpaceId, userId, initialState = {}) {
+export async function runInitialPlanning(studySpaceId, userId, initialState = {}, config = {}) {
   console.log(`🚀 启动首次计划生成工作流 [spaceId: ${studySpaceId}]`);
 
   // 创建初始状态
@@ -622,8 +641,11 @@ export async function runInitialPlanning(studySpaceId, userId, initialState = {}
   // 构建工作流并编译
   const workflow = createInitialPlanningWorkflow();
 
-  // 执行工作流（不使用 checkpointer，单次执行）
-  const result = await workflow.invoke(state);
+  // ✅ 执行工作流（使用 checkpointer 配置）
+  const result = await workflow.invoke(state, {
+    configurable: { thread_id: studySpaceId },
+    ...config
+  });
 
   console.log(`✅ 工作流执行完成，最终阶段: ${result.workflow.stage}`);
 

@@ -30,8 +30,18 @@ export const checkpointer = new MemorySaver();
 export async function getState(threadId) {
   try {
     const config = { configurable: { thread_id: threadId } };
-    // 这里需要具体的 LangGraph checkpointer 调用
-    // 实际实现取决于 LangGraph 版本
+    // ✅ 使用 MemorySaver 的 get 方法
+    const checkpoint = await checkpointer.get(config);
+
+    if (checkpoint && checkpoint.values) {
+      console.log(`✅ 获取到状态 [threadId: ${threadId}]`, {
+        stage: checkpoint.values.workflow?.stage,
+        currentNode: checkpoint.values.workflow?.currentNode
+      });
+      return checkpoint.values;
+    }
+
+    console.log(`⚠️ 未找到状态 [threadId: ${threadId}]`);
     return null;
   } catch (error) {
     console.error(`获取状态失败 [threadId: ${threadId}]:`, error);

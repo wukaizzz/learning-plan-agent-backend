@@ -7,6 +7,7 @@ import express from 'express';
 import { createInitialState } from '../types/workflowState.js';
 import { checkpointer } from '../utils/checkpointer.js';
 import { runInitialPlanning } from '../workflows/initialPlanningWorkflow.js';
+import { parseFormData } from '../utils/formDataParser.js';
 
 const router = express.Router();
 
@@ -80,20 +81,50 @@ router.post('/:threadId/resume', async (req, res) => {
 
     console.log(`▶️ 恢复工作流 [threadId: ${threadId}]`, userInput);
 
-    // 创建新状态，包含用户输入的数据
+    // ✅ 解析表单数据（扁平化 → 嵌套）
+    const parsedData = parseFormData(userInput);
+    console.log('✅ 解析后的数据:', parsedData);
+
+    // ✅ 从 checkpointer 获取之前的状态
+    let previousState = null;
+    try {
+      const config = { configurable: { thread_id: threadId } };
+      const checkpoint = await checkpointer.get(config);
+      if (checkpoint) {
+        previousState = checkpoint.values;
+        console.log('📋 获取到之前的状态:', {
+          stage: previousState.workflow?.stage,
+          currentNode: previousState.workflow?.currentNode,
+          hasGoal: !!previousState.goal,
+          hasSubjects: !!previousState.subjects?.length
+        });
+      }
+    } catch (error) {
+      console.log('⚠️ 未找到之前的状态，使用初始状态');
+    }
+
+    // ✅ 合并之前的状态和新的用户输入
     const updatedState = {
-      ...createInitialState(threadId, userInput.userId || 'default-user'),
-      ...userInput,
+      ...(previousState || createInitialState(threadId, userInput.userId || 'default-user')),
+      ...parsedData,  // ← 解析后的嵌套数据
       studySpaceId: threadId,
-      interruption: null // 清除中断状态
+      interruption: null  // 清除中断状态
     };
 
-    // 重新执行工作流（带上用户输入的数据）
+    console.log('🔄 合并后的状态:', {
+      goal: updatedState.goal,
+      subjects: updatedState.subjects,
+      availability: updatedState.availability
+    });
+
+    // ✅ 使用 checkpointer 重新执行工作流（从中断点继续）
     const result = await runInitialPlanning(
       threadId,
       userInput.userId || 'default-user',
       updatedState
     );
+
+    console.log(`✅ 工作流恢复完成，最终阶段: ${result.workflow.stage}`);
 
     // 检查是否还有其他缺失信息
     if (result.interruption?.isInterrupted) {

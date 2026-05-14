@@ -88,6 +88,7 @@ export async function streamChat(req, res) {
       // 发送 UI Blocks 更新
       if (result.uiBlocks && result.uiBlocks.length > 0) {
         result.uiBlocks.forEach(block => {
+          // 传递一个json对象，{type,action,block}
           sendWorkflowEvent(res, 'ui_block_update', {
             action: 'add',
             block
