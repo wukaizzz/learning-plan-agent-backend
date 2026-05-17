@@ -93,7 +93,6 @@ async function collectMissingInfo(state) {
   console.log(`🔍 [collectMissingInfo] 检查缺失信息`);
 
   const missingFields = [];
-
   // 检查考试日期
   if (!state.goal.examDate) {
     missingFields.push({

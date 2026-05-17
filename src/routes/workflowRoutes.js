@@ -11,6 +11,35 @@ import { parseFormData } from '../utils/formDataParser.js';
 
 const router = express.Router();
 
+function deepMerge(base, updates) {
+  if (!updates || typeof updates !== 'object') {
+    return base;
+  }
+
+  const merged = Array.isArray(base) ? [...base] : { ...base };
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      merged[key] &&
+      typeof merged[key] === 'object' &&
+      !Array.isArray(merged[key])
+    ) {
+      merged[key] = deepMerge(merged[key], value);
+    } else {
+      merged[key] = value;
+    }
+  }
+
+  return merged;
+}
+
 /**
  * 启动首次计划生成工作流
  * POST /api/workflows/spaces/:spaceId/start-planning
@@ -104,9 +133,9 @@ router.post('/:threadId/resume', async (req, res) => {
     }
 
     // ✅ 合并之前的状态和新的用户输入
+    const baseState = previousState || createInitialState(threadId, userInput.userId || 'default-user');
     const updatedState = {
-      ...(previousState || createInitialState(threadId, userInput.userId || 'default-user')),
-      ...parsedData,  // ← 解析后的嵌套数据
+      ...deepMerge(baseState, parsedData),
       studySpaceId: threadId,
       interruption: null  // 清除中断状态
     };
