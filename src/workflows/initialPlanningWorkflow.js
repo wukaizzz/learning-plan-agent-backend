@@ -251,7 +251,7 @@ ${subjects.length > 0
 
     const thinkingDuration = ((Date.now() - startTime) / 1000).toFixed(1);
     onEvent({ type: 'thinking_end', duration: parseFloat(thinkingDuration) });
-
+    console.log(contentText); //TODO contentText
     console.log(`📊 [analyzeStudyRequirements] R1 思考完成 (${thinkingDuration}s), content length: ${contentText.length}`);
 
     onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
@@ -372,7 +372,7 @@ ${thinkingText || planPrompt}
 
     planStrategy = taskFramework.strategy;
     tasks = deterministicallyScheduleTasks(taskFramework.tasks, availability, subjects);
-
+    console.log(tasks) // TODO tasks
     console.log(`✅ [generateStudyPlan] LLM 生成框架 + 确定性调度，共 ${tasks.length} 个任务`);
 
   } catch (error) {

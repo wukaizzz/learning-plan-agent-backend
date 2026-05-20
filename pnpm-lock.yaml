@@ -13,7 +13,7 @@ importers:
         version: 1.1.47(openai@6.38.0(zod@4.4.3))
       '@langchain/langgraph':
         specifier: ^1.3.0
-        version: 1.3.0(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(openai@6.38.0(zod@4.4.3))(zod@4.4.3)
+        version: 1.3.0(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(openai@6.38.0(zod@4.4.3))(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@langchain/openai':
         specifier: ^1.4.6
         version: 1.4.6(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))
@@ -611,6 +611,11 @@ packages:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
 
+  zod-to-json-schema@3.25.2:
+    resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
+    peerDependencies:
+      zod: ^3.25.28 || ^4
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -654,7 +659,7 @@ snapshots:
       - openai
       - ws
 
-  '@langchain/langgraph@1.3.0(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(openai@6.38.0(zod@4.4.3))(zod@4.4.3)':
+  '@langchain/langgraph@1.3.0(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(openai@6.38.0(zod@4.4.3))(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)':
     dependencies:
       '@langchain/core': 1.1.47(openai@6.38.0(zod@4.4.3))
       '@langchain/langgraph-checkpoint': 1.0.2(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))
@@ -663,6 +668,8 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       uuid: 10.0.0
       zod: 4.4.3
+    optionalDependencies:
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - '@opentelemetry/api'
       - '@opentelemetry/exporter-trace-otlp-proto'
@@ -1191,5 +1198,10 @@ snapshots:
   uuid@13.0.2: {}
 
   vary@1.1.2: {}
+
+  zod-to-json-schema@3.25.2(zod@4.4.3):
+    dependencies:
+      zod: 4.4.3
+    optional: true
 
   zod@4.4.3: {}

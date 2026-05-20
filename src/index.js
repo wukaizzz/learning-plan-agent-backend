@@ -1,15 +1,12 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import { config } from './config.js';
 import chatRouter from './routes/chat.js';
 import doubaoRouter from './routes/doubao.js';
 import toolRouter from './routes/tool.js';
 import workflowRouter from './routes/workflowRoutes.js';
 
-dotenv.config();
-
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
@@ -27,9 +24,9 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     services: {
-      deepseek: !!process.env.DEEPSEEK_API_KEY,
-      doubao: !!process.env.ARK_API_KEY,
-      langgraph: true // Phase 1 基础设施已就绪
+      deepseek: !!config.deepseek.apiKey,
+      doubao: !!config.ark.apiKey,
+      langgraph: true
     },
     version: '1.1.0'
   });
@@ -41,7 +38,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
+app.listen(config.server.port, () => {
+  console.log(`Backend server running on port ${config.server.port}`);
+  console.log(`Health check: http://localhost:${config.server.port}/health`);
 });
