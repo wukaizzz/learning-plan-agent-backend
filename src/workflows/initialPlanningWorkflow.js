@@ -1,15 +1,20 @@
 /**
  * 首次计划生成工作流
  * LangGraph 工作流实现 - 用于首次创建学习计划
+ *
+ * 改造要点:
+ * 1. invoke → stream，支持逐节点推送 SSE
+ * 2. 节点签名 (state, config)，通过 config.configurable.onEvent 推送中间事件
+ * 3. analyze_requirements 使用 R1 推理模型（reasoning_content → thinking 事件）
+ * 4. generate_plan 使用 V3 对话模型（withStructuredOutput + 确定性调度）
  */
 
 import { StateGraph, END, Annotation } from '@langchain/langgraph';
 import { checkpointer } from '../utils/checkpointer.js';
 import { createInitialState } from '../types/workflowState.js';
+import { streamReasoner, streamChat, structuredOutput, streamChatWithThinking } from '../services/llmService.js';
+import { RiskAssessmentSchema, TaskFrameworkSchema } from '../types/llmSchemas.js';
 
-// ============================================================
-// 定义状态结构
-// ============================================================
 const StateAnnotation = Annotation.Root({
   studySpaceId: Annotation(),
   userId: Annotation(),
@@ -26,21 +31,20 @@ const StateAnnotation = Annotation.Root({
   metadata: Annotation()
 });
 
+function getOnEvent(config) {
+  return config?.configurable?.onEvent || (() => {});
+}
+
 // ============================================================
 // 节点函数实现
 // ============================================================
 
-/**
- * 节点 1: 加载学习空间上下文
- * 从数据库加载学习空间的完整信息
- */
-async function loadSpaceContext(state) {
+async function loadSpaceContext(state, config) {
+  const onEvent = getOnEvent(config);
   console.log(`📂 [loadSpaceContext] 加载学习空间 [spaceId: ${state.studySpaceId}]`);
 
-  // TODO: 从数据库加载实际的学习空间数据
-  // const spaceData = await db.studySpaces.findById(state.studySpaceId);
+  onEvent({ type: 'workflow_step', step: 'collecting', progress: 10 });
 
-  // 模拟从数据库加载的数据
   const loadedData = {
     goal: {
       ...state.goal,
@@ -70,11 +74,7 @@ async function loadSpaceContext(state) {
       currentNode: 'load_space_context',
       history: [
         ...state.workflow.history,
-        {
-          node: 'load_space_context',
-          timestamp: Date.now(),
-          duration: 100
-        }
+        { node: 'load_space_context', timestamp: Date.now(), duration: 100 }
       ]
     },
     metadata: {
@@ -85,15 +85,12 @@ async function loadSpaceContext(state) {
   };
 }
 
-/**
- * 节点 2: 收集缺失信息
- * 检查必需字段，如有缺失则触发中断
- */
-async function collectMissingInfo(state) {
+async function collectMissingInfo(state, config) {
+  const onEvent = getOnEvent(config);
   console.log(`🔍 [collectMissingInfo] 检查缺失信息`);
 
   const missingFields = [];
-  // 检查考试日期
+
   if (!state.goal.examDate) {
     missingFields.push({
       name: 'goal.examDate',
@@ -105,7 +102,6 @@ async function collectMissingInfo(state) {
     });
   }
 
-  // 检查目标分数
   if (!state.goal.targetScore) {
     missingFields.push({
       name: 'goal.targetScore',
@@ -117,7 +113,6 @@ async function collectMissingInfo(state) {
     });
   }
 
-  // 检查科目信息
   if (!state.subjects || state.subjects.length === 0) {
     missingFields.push({
       name: 'subjects',
@@ -130,7 +125,6 @@ async function collectMissingInfo(state) {
     });
   }
 
-  // 检查每日可用时间
   if (!state.availability.dailyHours || state.availability.dailyHours < 1) {
     missingFields.push({
       name: 'availability.dailyHours',
@@ -142,11 +136,9 @@ async function collectMissingInfo(state) {
     });
   }
 
-  // 如果有缺失信息，生成 UI Block 并中断
   if (missingFields.length > 0) {
     console.log(`⏸️ [collectMissingInfo] 发现 ${missingFields.length} 个缺失字段，触发中断`);
 
-    // 转换字段格式以匹配前端 CollectionForm 组件
     const formattedFields = missingFields.map(field => ({
       name: field.name,
       label: field.label,
@@ -154,7 +146,6 @@ async function collectMissingInfo(state) {
       placeholder: field.placeholder,
       required: field.required,
       options: field.options,
-      // 移除前端不需要的字段
       question: undefined
     }));
 
@@ -169,6 +160,9 @@ async function collectMissingInfo(state) {
         description: '为了制定更好的学习计划，请完善以下信息'
       }
     };
+
+    onEvent({ type: 'ui_block_update', action: 'add', block: collectionFormBlock });
+    onEvent({ type: 'info_needed', question: missingFields[0].question, field: missingFields[0].name, fieldType: missingFields[0].type, options: missingFields[0].options });
 
     return {
       workflow: {
@@ -194,7 +188,6 @@ async function collectMissingInfo(state) {
     };
   }
 
-  // 信息完整，继续
   console.log(`✅ [collectMissingInfo] 信息完整，继续执行`);
   return {
     workflow: {
@@ -203,11 +196,7 @@ async function collectMissingInfo(state) {
       currentNode: 'collect_missing_info',
       history: [
         ...state.workflow.history,
-        {
-          node: 'collect_missing_info',
-          timestamp: Date.now(),
-          duration: 50
-        }
+        { node: 'collect_missing_info', timestamp: Date.now(), duration: 50 }
       ]
     },
     metadata: {
@@ -218,23 +207,16 @@ async function collectMissingInfo(state) {
   };
 }
 
-/**
- * 节点 3: 分析学习需求
- * 调用 AI 模型分析学习需求并确定优先级
- */
-async function analyzeStudyRequirements(state) {
+async function analyzeStudyRequirements(state, config) {
+  const onEvent = getOnEvent(config);
   console.log(`🧠 [analyzeStudyRequirements] AI 分析学习需求`);
 
   const { goal, subjects, availability } = state;
 
-  // ✅ 验证必要数据是否存在
-  if (!goal.examDate || !goal.targetScore || !subjects || subjects.length === 0) {
-    console.warn('⚠️ [analyzeStudyRequirements] 缺少必要数据，使用默认值');
-  }
+  onEvent({ type: 'workflow_step', step: 'analyzing', progress: 40 });
+  onEvent({ type: 'thinking', content: '正在分析你的学习情况...\n\n' });
 
-  // 构建分析提示词
-  const analysisPrompt = `
-请分析以下学习情况并给出建议：
+  const analysisPrompt = `你是一位专业的学习规划分析师。请深入分析以下学生的学习情况：
 
 学习目标：${goal.primaryGoal || '未知'}
 考试日期：${goal.examDate || '未设置'}
@@ -244,72 +226,81 @@ async function analyzeStudyRequirements(state) {
 
 科目信息：
 ${subjects.length > 0
-  ? subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10`).join('\n')
-  : '无科目信息'
-}
+    ? subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10，优先级 ${s.priority}`).join('\n')
+    : '无科目信息'
+  }
 
 请分析：
-1. 时间是否充足（计算所需总学习时间）
-2. 各科目的优先级排序
-3. 学习策略建议（重点突破哪些科目）
-4. 风险提示
-`;
+1. 时间是否充足（计算所需总学习时间 vs 可用时间）
+2. 各科目的优先级排序及理由
+3. 学习策略建议（重点突破哪些科目，时间如何分配）
+4. 潜在风险及应对措施`;
 
-  console.log('📝 [analyzeStudyRequirements] 分析提示词:', analysisPrompt);
+  let riskAssessment;
+  try {
+    const startTime = Date.now();
 
-  // TODO: 调用 AI 模型
-  // const analysisResult = await callDeepSeek(analysisPrompt);
+    const { thinkingText, contentText } = await streamReasoner(analysisPrompt, {
+      onThinking: (token) => {
+        onEvent({ type: 'thinking', content: token });
+      },
+      onContent: (token) => {
+        onEvent({ type: 'content', content: token });
+      }
+    });
 
-  // ✅ 改进的模拟 AI 分析结果（基于真实数据）
-  const analysisResult = {
-    timeAssessment: availability.examDistance * availability.dailyHours >= 60 ? '充足' : '紧张',
-    subjectPriorities: subjects.length > 0 ? subjects.map(s => ({
-      ...s,
-      priorityLevel: s.targetLevel - s.currentLevel >= 2 ? 'high' : 'medium'
-    })) : [],
-    strategy: subjects.length > 0
-      ? `建议优先攻克${subjects[0]?.name || '主要科目'}，每日分配${Math.floor(availability.dailyHours * 0.6)}小时`
-      : '请先添加科目信息',
-    risks: []
-  };
+    const thinkingDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+    onEvent({ type: 'thinking_end', duration: parseFloat(thinkingDuration) });
 
-  // ✅ 基于真实数据的风险评估
-  if (availability.examDistance < 7 && subjects.length > 2) {
-    analysisResult.risks.push('时间紧迫，建议聚焦重点科目');
+    console.log(`📊 [analyzeStudyRequirements] R1 思考完成 (${thinkingDuration}s), content length: ${contentText.length}`);
+
+    onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
+    onEvent({ type: 'content', content: '\n\n正在整理分析结论...\n' });
+
+    const structuredPrompt = `基于以下分析，输出结构化 JSON：
+
+分析内容：
+${contentText}
+
+请严格按照以下 JSON 格式输出：
+{
+  "level": "low" | "medium" | "high" | "critical",
+  "factors": [{ "type": "time_pressure" | "low_accuracy" | "falling_behind" | "resource_overload", "description": "描述", "severity": 1-10 }],
+  "prediction": "风险预测文本",
+  "suggestedActions": ["建议1", "建议2"],
+  "timeAssessment": "sufficient" | "tight" | "insufficient",
+  "subjectPriorities": [{ "subjectName": "科目名", "priorityLevel": "high" | "medium" | "low", "reason": "理由" }],
+  "strategy": "学习策略文本"
+}`;
+
+    riskAssessment = await structuredOutput(structuredPrompt, RiskAssessmentSchema, {
+      systemPrompt: '你是一位学习规划分析师。请输出严格的 JSON 格式，不要添加任何额外文字。'
+    });
+
+    onEvent({ type: 'analysis_result', summary: riskAssessment.prediction, findings: riskAssessment.factors.map(f => f.description), recommendations: riskAssessment.suggestedActions });
+
+    console.log(`📊 [analyzeStudyRequirements] 结构化分析完成`, {
+      level: riskAssessment.level,
+      risksCount: riskAssessment.factors.length,
+      timeAssessment: riskAssessment.timeAssessment
+    });
+
+  } catch (error) {
+    console.error('⚠️ [analyzeStudyRequirements] R1/结构化调用失败，降级为规则分析:', error.message);
+    onEvent({ type: 'content', content: '\n\n（使用规则分析引擎）\n' });
+
+    riskAssessment = buildFallbackRiskAssessment(goal, subjects, availability);
   }
-
-  if (!goal.examDate) {
-    analysisResult.risks.push('未设置考试日期，无法准确规划');
-  }
-
-  console.log(`📊 [analyzeStudyRequirements] 分析完成`, {
-    timeAssessment: analysisResult.timeAssessment,
-    risksCount: analysisResult.risks.length,
-    subjectCount: subjects.length
-  });
 
   return {
-    riskAssessment: {
-      level: analysisResult.risks.length > 0 ? 'medium' : 'low',
-      factors: analysisResult.risks.map(r => ({
-        type: 'time_pressure',
-        description: r,
-        severity: 6
-      })),
-      prediction: analysisResult.risks.join('; ') || '当前计划可行',
-      suggestedActions: analysisResult.strategy.split(', ')
-    },
+    riskAssessment,
     workflow: {
       ...state.workflow,
       stage: 'planning',
       currentNode: 'analyze_requirements',
       history: [
         ...state.workflow.history,
-        {
-          node: 'analyze_requirements',
-          timestamp: Date.now(),
-          duration: 1500
-        }
+        { node: 'analyze_requirements', timestamp: Date.now(), duration: Date.now() - (state.metadata?.updatedAt || Date.now()) }
       ]
     },
     metadata: {
@@ -319,66 +310,79 @@ ${subjects.length > 0
   };
 }
 
-/**
- * 节点 4: 生成学习计划
- * 生成详细的学习任务列表
- */
-async function generateStudyPlan(state) {
+async function generateStudyPlan(state, config) {
+  const onEvent = getOnEvent(config);
   console.log(`📋 [generateStudyPlan] 生成学习计划`);
 
-  const { goal, subjects, availability } = state;
+  const { goal, subjects, availability, riskAssessment } = state;
 
-  // 计算总天数和每日任务
-  const totalDays = availability.examDistance;
-  const dailyHours = availability.dailyHours;
+  onEvent({ type: 'workflow_step', step: 'generating', progress: 70 });
+  onEvent({ type: 'thinking', content: '正在规划学习任务和进度安排...\n\n' });
 
-  // 生成任务
-  const tasks = [];
-  let taskId = 1;
+  let tasks;
+  let planStrategy = '';
 
-  // 为每个科目生成任务
-  for (const subject of subjects) {
-    const subjectTasks = Math.ceil((subject.targetLevel - subject.currentLevel) * 3);
-    const taskPerDay = Math.ceil(subjectTasks / totalDays);
+  try {
+    const planPrompt = `你是一位学习规划专家。根据以下信息，制定学习任务框架：
 
-    for (let day = 0; day < totalDays; day++) {
-      const date = new Date();
-      date.setDate(date.getDate() + day);
+学习目标：${goal.primaryGoal || '未知'}
+考试日期：${goal.examDate || '未设置'}
+目标分数：${goal.targetScore || '未设置'}
+距离考试：${availability.examDistance} 天
+每日可用时间：${availability.dailyHours} 小时
 
-      if (day % Math.ceil(totalDays / subjectTasks) === 0 && taskId <= subjectTasks) {
-        tasks.push({
-          id: `task_${taskId++}_${subject.id}`,
-          subjectId: subject.id,
-          title: `${subject.name} - 第${Math.floor(taskId / Math.ceil(totalDays / subjectTasks)) + 1}阶段学习`,
-          type: 'study',
-          estimatedMinutes: Math.floor(dailyHours * 60 / subjects.length),
-          scheduledDate: date.toISOString().split('T')[0],
-          priority: subject.priority === 'high' ? 8 : 5,
-          status: 'pending'
-        });
+科目信息：
+${subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10，优先级 ${s.priority}`).join('\n')}
+
+风险评估：${riskAssessment?.level || 'unknown'}，${riskAssessment?.prediction || ''}
+建议策略：${riskAssessment?.suggestedActions?.join('；') || ''}
+
+请规划学习任务框架，包含：
+1. 每个科目需要哪些学习/练习/复习任务
+2. 任务的优先级和预估时长
+3. 分阶段安排建议
+
+注意：只需输出任务框架（任务名称、类型、优先级、预估小时数），具体日期和时间由系统自动分配。`;
+
+    const { thinkingText } = await streamChatWithThinking(planPrompt, {
+      onThinking: (token) => {
+        onEvent({ type: 'thinking', content: token });
+      },
+      onContent: (token) => {
+        onEvent({ type: 'content', content: token });
       }
-    }
-  }
-
-  // 添加复习任务
-  const reviewDays = Math.max(3, Math.floor(totalDays * 0.1));
-  for (let i = 0; i < reviewDays; i++) {
-    const reviewDate = new Date();
-    reviewDate.setDate(reviewDate.getDate() + totalDays - reviewDays + i);
-
-    tasks.push({
-      id: `review_${i + 1}`,
-      subjectId: 'all',
-      title: `综合复习 - 第${i + 1}轮`,
-      type: 'review',
-      estimatedMinutes: Math.floor(dailyHours * 30),
-      scheduledDate: reviewDate.toISOString().split('T')[0],
-      priority: 7,
-      status: 'pending'
     });
+
+    onEvent({ type: 'thinking_end', duration: 0 });
+
+    const structuredPlanPrompt = `基于以下规划思考，输出结构化 JSON：
+
+${thinkingText || planPrompt}
+
+请严格按照以下 JSON 格式输出：
+{
+  "tasks": [{ "subjectId": "科目ID", "subjectName": "科目名", "title": "任务标题", "type": "study" | "practice" | "review", "priority": 1-10, "estimatedHours": 数字, "description": "描述" }],
+  "strategy": "整体策略文本",
+  "totalEstimatedHours": 数字
+}`;
+
+    const taskFramework = await structuredOutput(structuredPlanPrompt, TaskFrameworkSchema, {
+      systemPrompt: '你是一位学习规划专家。请输出严格的 JSON 格式，不要添加任何额外文字。'
+    });
+
+    planStrategy = taskFramework.strategy;
+    tasks = deterministicallyScheduleTasks(taskFramework.tasks, availability, subjects);
+
+    console.log(`✅ [generateStudyPlan] LLM 生成框架 + 确定性调度，共 ${tasks.length} 个任务`);
+
+  } catch (error) {
+    console.error('⚠️ [generateStudyPlan] V3 调用失败，降级为纯规则生成:', error.message);
+    onEvent({ type: 'content', content: '\n\n（使用规则引擎生成计划）\n' });
+
+    tasks = generateFallbackTasks(subjects, availability);
   }
 
-  console.log(`✅ [generateStudyPlan] 生成 ${tasks.length} 个任务`);
+  onEvent({ type: 'workflow_step', step: 'generating', progress: 90 });
 
   return {
     tasksSnapshot: tasks,
@@ -398,11 +402,7 @@ async function generateStudyPlan(state) {
       currentNode: 'generate_plan',
       history: [
         ...state.workflow.history,
-        {
-          node: 'generate_plan',
-          timestamp: Date.now(),
-          duration: 800
-        }
+        { node: 'generate_plan', timestamp: Date.now(), duration: Date.now() - (state.metadata?.updatedAt || Date.now()) }
       ]
     },
     metadata: {
@@ -412,16 +412,12 @@ async function generateStudyPlan(state) {
   };
 }
 
-/**
- * 节点 5: 构建 UI Blocks
- * 将计划转换为前端可渲染的 UI Blocks
- */
-async function buildUIBlocks(state) {
+async function buildUIBlocks(state, config) {
+  const onEvent = getOnEvent(config);
   console.log(`🎨 [buildUIBlocks] 构建 UI Blocks`);
 
   const { goal, subjects, tasksSnapshot, availability, riskAssessment, currentPlan } = state;
 
-  // 按日期分组任务
   const tasksByDate = {};
   for (const task of tasksSnapshot) {
     if (!tasksByDate[task.scheduledDate]) {
@@ -430,12 +426,10 @@ async function buildUIBlocks(state) {
     tasksByDate[task.scheduledDate].push(task);
   }
 
-  // 获取今日日期的任务
   const today = new Date().toISOString().split('T')[0];
   const todayTasks = tasksSnapshot.filter(t => t.scheduledDate === today);
 
   const uiBlocks = [
-    // 1. 概览卡片 - 使用前端 SummaryCard 期望的格式
     {
       id: 'summary_card',
       type: 'summary-card',
@@ -457,8 +451,6 @@ async function buildUIBlocks(state) {
         }))
       }
     },
-
-    // 2. 每日任务列表 - 使用前端 DailyTaskList 期望的格式
     {
       id: 'daily_task_list',
       type: 'daily-task-list',
@@ -479,8 +471,6 @@ async function buildUIBlocks(state) {
         completionRate: 0
       }
     },
-
-    // 3. 学习时间线 - 使用前端 StudyTimeline 期望的格式
     {
       id: 'study_timeline',
       type: 'study-timeline',
@@ -489,9 +479,9 @@ async function buildUIBlocks(state) {
       props: {
         startDate: new Date().toISOString().split('T')[0],
         endDate: goal.examDate || new Date(Date.now() + availability.examDistance * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        events: Object.entries(tasksByDate).slice(0, 10).map(([date, tasks]) => ({
+        events: Object.entries(tasksByDate).slice(0, 10).map(([date, dateTasks]) => ({
           date,
-          title: `${tasks.length} 个任务`,
+          title: `${dateTasks.length} 个任务`,
           type: 'study_session',
           importance: 'medium'
         }))
@@ -499,7 +489,6 @@ async function buildUIBlocks(state) {
     }
   ];
 
-  // 添加风险警告（如果有）
   if (riskAssessment && riskAssessment.level !== 'low') {
     uiBlocks.push({
       id: 'risk_alert',
@@ -511,13 +500,12 @@ async function buildUIBlocks(state) {
           type: f.type,
           severity: f.severity >= 7 ? 'high' : f.severity >= 4 ? 'medium' : 'low',
           message: f.description,
-          suggestion: riskAssessment.suggestedActions[0] || ''
+          suggestion: riskAssessment.suggestedActions?.[0] || ''
         }))
       }
     });
   }
 
-  // 添加操作栏
   uiBlocks.push({
     id: 'action_bar',
     type: 'action-bar',
@@ -525,21 +513,17 @@ async function buildUIBlocks(state) {
     order: 99,
     props: {
       actions: [
-        {
-          id: 'start_today',
-          label: '从今天开始',
-          type: 'primary',
-          onClick: () => console.log('开始学习')
-        },
-        {
-          id: 'adjust_plan',
-          label: '调整计划',
-          type: 'secondary',
-          onClick: () => console.log('调整计划')
-        }
+        { id: 'start_today', label: '从今天开始', type: 'primary' },
+        { id: 'adjust_plan', label: '调整计划', type: 'secondary' }
       ]
     }
   });
+
+  for (const block of uiBlocks) {
+    onEvent({ type: 'ui_block_update', action: 'add', block });
+  }
+
+  onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
 
   console.log(`✅ [buildUIBlocks] 生成 ${uiBlocks.length} 个 UI Blocks`);
 
@@ -551,11 +535,7 @@ async function buildUIBlocks(state) {
       currentNode: 'build_ui_blocks',
       history: [
         ...state.workflow.history,
-        {
-          node: 'build_ui_blocks',
-          timestamp: Date.now(),
-          duration: 200
-        }
+        { node: 'build_ui_blocks', timestamp: Date.now(), duration: 200 }
       ]
     },
     metadata: {
@@ -567,40 +547,160 @@ async function buildUIBlocks(state) {
 }
 
 // ============================================================
+// 确定性调度 + 降级逻辑
+// ============================================================
+
+function deterministicallyScheduleTasks(frameworkTasks, availability, subjects) {
+  const totalDays = availability.examDistance;
+  const dailyMinutes = availability.dailyHours * 60;
+  const tasks = [];
+  const sorted = [...frameworkTasks].sort((a, b) => b.priority - a.priority);
+
+  const subjectHours = {};
+  for (const ft of sorted) {
+    const sid = ft.subjectId || 'general';
+    if (!subjectHours[sid]) subjectHours[sid] = 0;
+    const remainingHours = ft.estimatedHours || 2;
+    const sessionsNeeded = Math.ceil(remainingHours / (dailyMinutes / 60 / subjects.length));
+
+    for (let s = 0; s < sessionsNeeded; s++) {
+      const dayOffset = Math.floor((Object.keys(subjectHours).reduce((a, b) => a + subjectHours[b], 0) + s * (dailyMinutes / 60 / subjects.length)) / availability.dailyHours);
+      const date = new Date();
+      date.setDate(date.getDate() + Math.min(dayOffset, totalDays - 1));
+
+      tasks.push({
+        id: `task_${tasks.length + 1}_${sid}`,
+        subjectId: sid,
+        title: ft.title,
+        type: ft.type || 'study',
+        estimatedMinutes: Math.min(Math.round((remainingHours / sessionsNeeded) * 60), dailyMinutes),
+        scheduledDate: date.toISOString().split('T')[0],
+        priority: ft.priority,
+        status: 'pending',
+      });
+
+      subjectHours[sid] += remainingHours / sessionsNeeded;
+    }
+  }
+
+  const reviewDays = Math.max(3, Math.floor(totalDays * 0.1));
+  for (let i = 0; i < reviewDays; i++) {
+    const reviewDate = new Date();
+    reviewDate.setDate(reviewDate.getDate() + totalDays - reviewDays + i);
+    tasks.push({
+      id: `review_${i + 1}`,
+      subjectId: 'all',
+      title: `综合复习 - 第${i + 1}轮`,
+      type: 'review',
+      estimatedMinutes: Math.min(Math.floor(dailyMinutes * 0.5), 90),
+      scheduledDate: reviewDate.toISOString().split('T')[0],
+      priority: 7,
+      status: 'pending',
+    });
+  }
+
+  return tasks;
+}
+
+function buildFallbackRiskAssessment(goal, subjects, availability) {
+  const risks = [];
+  const totalHours = availability.examDistance * availability.dailyHours;
+  const neededHours = subjects.reduce((sum, s) => sum + (s.targetLevel - s.currentLevel) * 8, 0);
+
+  if (totalHours < neededHours) {
+    risks.push({ type: 'time_pressure', description: `可用学习时间(${totalHours}h)可能不足以完成所有科目提升(需约${neededHours}h)`, severity: 7 });
+  }
+  if (availability.examDistance < 14 && subjects.length > 2) {
+    risks.push({ type: 'resource_overload', description: '时间紧迫，建议聚焦重点科目', severity: 6 });
+  }
+
+  return {
+    level: risks.length > 1 ? 'high' : risks.length > 0 ? 'medium' : 'low',
+    factors: risks,
+    prediction: risks.map(r => r.description).join('; ') || '当前计划可行',
+    suggestedActions: subjects.length > 0
+      ? [`建议优先攻克${subjects[0]?.name || '主要科目'}，每日分配${Math.floor(availability.dailyHours * 0.6)}小时`]
+      : ['请先添加科目信息'],
+    timeAssessment: totalHours >= neededHours ? 'sufficient' : totalHours >= neededHours * 0.6 ? 'tight' : 'insufficient',
+    subjectPriorities: subjects.map(s => ({
+      subjectName: s.name,
+      priorityLevel: s.targetLevel - s.currentLevel >= 3 ? 'high' : s.targetLevel - s.currentLevel >= 2 ? 'medium' : 'low',
+      reason: `差距${s.targetLevel - s.currentLevel}个等级`,
+    })),
+    strategy: subjects.length > 0
+      ? `建议优先攻克${subjects[0]?.name || '主要科目'}，每日分配${Math.floor(availability.dailyHours * 0.6)}小时`
+      : '请先添加科目信息',
+  };
+}
+
+function generateFallbackTasks(subjects, availability) {
+  const tasks = [];
+  let taskId = 1;
+  const totalDays = availability.examDistance;
+  const dailyHours = availability.dailyHours;
+
+  for (const subject of subjects) {
+    const subjectTasks = Math.ceil((subject.targetLevel - subject.currentLevel) * 3);
+    for (let day = 0; day < totalDays; day++) {
+      const date = new Date();
+      date.setDate(date.getDate() + day);
+      if (day % Math.ceil(totalDays / subjectTasks) === 0 && taskId <= subjectTasks) {
+        tasks.push({
+          id: `task_${taskId++}_${subject.id}`,
+          subjectId: subject.id,
+          title: `${subject.name} - 第${Math.floor(taskId / Math.ceil(totalDays / subjectTasks)) + 1}阶段学习`,
+          type: 'study',
+          estimatedMinutes: Math.floor(dailyHours * 60 / subjects.length),
+          scheduledDate: date.toISOString().split('T')[0],
+          priority: subject.priority === 'high' ? 8 : 5,
+          status: 'pending'
+        });
+      }
+    }
+  }
+
+  const reviewDays = Math.max(3, Math.floor(totalDays * 0.1));
+  for (let i = 0; i < reviewDays; i++) {
+    const reviewDate = new Date();
+    reviewDate.setDate(reviewDate.getDate() + totalDays - reviewDays + i);
+    tasks.push({
+      id: `review_${i + 1}`,
+      subjectId: 'all',
+      title: `综合复习 - 第${i + 1}轮`,
+      type: 'review',
+      estimatedMinutes: Math.floor(dailyHours * 30),
+      scheduledDate: reviewDate.toISOString().split('T')[0],
+      priority: 7,
+      status: 'pending'
+    });
+  }
+
+  return tasks;
+}
+
+// ============================================================
 // 工作流图构建
 // ============================================================
 
-/**
- * 创建首次计划生成工作流
- * @returns {CompiledStateGraph} 编译后的工作流图
- */
 export function createInitialPlanningWorkflow() {
-  // 创建状态图，使用定义的状态结构
   const workflow = new StateGraph(StateAnnotation);
 
-  // 添加节点
   workflow.addNode('load_space_context', loadSpaceContext);
   workflow.addNode('collect_missing_info', collectMissingInfo);
   workflow.addNode('analyze_requirements', analyzeStudyRequirements);
   workflow.addNode('generate_plan', generateStudyPlan);
   workflow.addNode('build_ui_blocks', buildUIBlocks);
 
-  // 设置入口点
   workflow.setEntryPoint('load_space_context');
-
-  // 添加边（定义节点之间的连接）
   workflow.addEdge('load_space_context', 'collect_missing_info');
 
-  // 条件边：根据是否中断决定下一步
   workflow.addConditionalEdges(
     'collect_missing_info',
     (state) => {
-      // 如果有中断，结束工作流（等待用户输入）
       if (state.interruption?.isInterrupted) {
         console.log('🔴 工作流中断，等待用户输入');
         return 'interrupt';
       }
-      // 否则继续
       console.log('🟢 工作流继续执行');
       return 'continue';
     },
@@ -614,44 +714,62 @@ export function createInitialPlanningWorkflow() {
   workflow.addEdge('generate_plan', 'build_ui_blocks');
   workflow.addEdge('build_ui_blocks', END);
 
-  // ✅ 编译工作流，带 checkpointer
   const compiledWorkflow = workflow.compile({ checkpointer });
 
-  console.log('✅ 首次计划生成工作流已构建（支持 checkpointer）');
+  console.log('✅ 首次计划生成工作流已构建（支持 stream + onEvent 回调）');
   return compiledWorkflow;
 }
 
 /**
- * 执行工作流（用于直接调用）
- * @param {string} studySpaceId - 学习空间 ID
- * @param {string} userId - 用户 ID
- * @param {Partial<StudySpaceWorkflowState>} initialState - 可选的初始状态
- * @returns {Promise<StudySpaceWorkflowState>}
+ * 流式执行工作流 — 逐节点推送 SSE 事件
+ * @param {string} studySpaceId
+ * @param {string} userId
+ * @param {object} initialState
+ * @param {object} config - 可包含 configurable.onEvent 回调
+ * @yields {{nodeName: string, state: object}} 每个节点执行后的状态快照
  */
-export async function runInitialPlanning(studySpaceId, userId, initialState = {}, config = {}) {
-  console.log(`🚀 启动首次计划生成工作流 [spaceId: ${studySpaceId}]`);
+export async function* runInitialPlanningStream(studySpaceId, userId, initialState = {}, config = {}) {
+  console.log(`🚀 启动流式首次计划生成工作流 [spaceId: ${studySpaceId}]`);
 
-  // 创建初始状态
   const state = {
     ...createInitialState(studySpaceId, userId),
     ...initialState
   };
 
-  // 构建工作流并编译
   const workflow = createInitialPlanningWorkflow();
+  const stream = await workflow.stream(state, {
+    configurable: { thread_id: studySpaceId, ...config?.configurable },
+  });
 
-  // ✅ 执行工作流（使用 checkpointer 配置）
+  for await (const event of stream) {
+    const [nodeName, nodeState] = Object.entries(event)[0];
+    console.log(`📡 [stream] 节点 ${nodeName} 完成, stage: ${nodeState.workflow?.stage}`);
+    yield { nodeName, state: nodeState };
+  }
+}
+
+/**
+ * 同步执行工作流（用于 resume 等非 SSE 场景，保持向后兼容）
+ */
+export async function runInitialPlanning(studySpaceId, userId, initialState = {}, config = {}) {
+  console.log(`🚀 启动首次计划生成工作流 [spaceId: ${studySpaceId}]`);
+
+  const state = {
+    ...createInitialState(studySpaceId, userId),
+    ...initialState
+  };
+
+  const workflow = createInitialPlanningWorkflow();
   const result = await workflow.invoke(state, {
-    configurable: { thread_id: studySpaceId },
-    ...config
+    configurable: { thread_id: studySpaceId, ...config?.configurable },
   });
 
   console.log(`✅ 工作流执行完成，最终阶段: ${result.workflow.stage}`);
-
   return result;
 }
 
 export default {
   createInitialPlanningWorkflow,
-  runInitialPlanning
+  runInitialPlanning,
+  runInitialPlanningStream,
 };
