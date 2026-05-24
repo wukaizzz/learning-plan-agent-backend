@@ -14,6 +14,7 @@ import { checkpointer } from '../utils/checkpointer.js';
 import { createInitialState } from '../types/workflowState.js';
 import { streamReasoner, streamChat, structuredOutput, streamChatWithThinking } from '../services/llmService.js';
 import { RiskAssessmentSchema, TaskFrameworkSchema } from '../types/llmSchemas.js';
+import { logger } from '../logger/index.js';
 
 const StateAnnotation = Annotation.Root({
   studySpaceId: Annotation(),
@@ -41,7 +42,7 @@ function getOnEvent(config) {
 
 async function loadSpaceContext(state, config) {
   const onEvent = getOnEvent(config);
-  console.log(`📂 [loadSpaceContext] 加载学习空间 [spaceId: ${state.studySpaceId}]`);
+  logger.info({ spaceId: state.studySpaceId, step: 'load_space_context' }, 'Load space context');
 
   onEvent({ type: 'workflow_step', step: 'collecting', progress: 10 });
 
@@ -87,7 +88,7 @@ async function loadSpaceContext(state, config) {
 
 async function collectMissingInfo(state, config) {
   const onEvent = getOnEvent(config);
-  console.log(`🔍 [collectMissingInfo] 检查缺失信息`);
+  logger.info({ step: 'collect_missing_info' }, 'Check missing info');
 
   const missingFields = [];
 
@@ -137,7 +138,7 @@ async function collectMissingInfo(state, config) {
   }
 
   if (missingFields.length > 0) {
-    console.log(`⏸️ [collectMissingInfo] 发现 ${missingFields.length} 个缺失字段，触发中断`);
+    logger.info({ step: 'collect_missing_info', missingCount: missingFields.length, action: 'interrupt' }, 'Missing fields found, triggering interrupt');
 
     const formattedFields = missingFields.map(field => ({
       name: field.name,
@@ -188,7 +189,7 @@ async function collectMissingInfo(state, config) {
     };
   }
 
-  console.log(`✅ [collectMissingInfo] 信息完整，继续执行`);
+  logger.info({ step: 'collect_missing_info', action: 'continue' }, 'Info complete, continuing');
   return {
     workflow: {
       ...state.workflow,
@@ -209,7 +210,7 @@ async function collectMissingInfo(state, config) {
 
 async function analyzeStudyRequirements(state, config) {
   const onEvent = getOnEvent(config);
-  console.log(`🧠 [analyzeStudyRequirements] AI 分析学习需求`);
+  logger.info({ step: 'analyze_requirements' }, 'AI analyzing study requirements');
 
   const { goal, subjects, availability } = state;
 
@@ -251,8 +252,7 @@ ${subjects.length > 0
 
     const thinkingDuration = ((Date.now() - startTime) / 1000).toFixed(1);
     onEvent({ type: 'thinking_end', duration: parseFloat(thinkingDuration) });
-    console.log(contentText); //TODO contentText
-    console.log(`📊 [analyzeStudyRequirements] R1 思考完成 (${thinkingDuration}s), content length: ${contentText.length}`);
+    logger.info({ step: 'analyze_requirements', thinkingDuration, contentLength: contentText.length, model: 'deepseek-r1' }, 'R1 thinking completed');
 
     onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
     onEvent({ type: 'content', content: '\n\n正在整理分析结论...\n' });
@@ -279,14 +279,16 @@ ${contentText}
 
     onEvent({ type: 'analysis_result', summary: riskAssessment.prediction, findings: riskAssessment.factors.map(f => f.description), recommendations: riskAssessment.suggestedActions });
 
-    console.log(`📊 [analyzeStudyRequirements] 结构化分析完成`, {
+    logger.info({
+      step: 'analyze_requirements',
+      model: 'deepseek-v3',
       level: riskAssessment.level,
       risksCount: riskAssessment.factors.length,
       timeAssessment: riskAssessment.timeAssessment
-    });
+    }, 'Structured analysis completed');
 
   } catch (error) {
-    console.error('⚠️ [analyzeStudyRequirements] R1/结构化调用失败，降级为规则分析:', error.message);
+    logger.error({ step: 'analyze_requirements', err: error.message }, 'R1/structured call failed, fallback to rules');
     onEvent({ type: 'content', content: '\n\n（使用规则分析引擎）\n' });
 
     riskAssessment = buildFallbackRiskAssessment(goal, subjects, availability);
@@ -312,7 +314,7 @@ ${contentText}
 
 async function generateStudyPlan(state, config) {
   const onEvent = getOnEvent(config);
-  console.log(`📋 [generateStudyPlan] 生成学习计划`);
+  logger.info({ step: 'generate_plan' }, 'Generating study plan');
 
   const { goal, subjects, availability, riskAssessment } = state;
 
@@ -372,11 +374,10 @@ ${thinkingText || planPrompt}
 
     planStrategy = taskFramework.strategy;
     tasks = deterministicallyScheduleTasks(taskFramework.tasks, availability, subjects);
-    console.log(tasks) // TODO tasks
-    console.log(`✅ [generateStudyPlan] LLM 生成框架 + 确定性调度，共 ${tasks.length} 个任务`);
+    logger.info({ step: 'generate_plan', taskCount: tasks.length, model: 'deepseek-v3' }, 'LLM framework + deterministic scheduling completed');
 
   } catch (error) {
-    console.error('⚠️ [generateStudyPlan] V3 调用失败，降级为纯规则生成:', error.message);
+    logger.error({ step: 'generate_plan', err: error.message }, 'V3 call failed, fallback to rules');
     onEvent({ type: 'content', content: '\n\n（使用规则引擎生成计划）\n' });
 
     tasks = generateFallbackTasks(subjects, availability);
@@ -414,7 +415,7 @@ ${thinkingText || planPrompt}
 
 async function buildUIBlocks(state, config) {
   const onEvent = getOnEvent(config);
-  console.log(`🎨 [buildUIBlocks] 构建 UI Blocks`);
+  logger.info({ step: 'build_ui_blocks' }, 'Building UI blocks');
 
   const { goal, subjects, tasksSnapshot, availability, riskAssessment, currentPlan } = state;
 
@@ -525,7 +526,7 @@ async function buildUIBlocks(state, config) {
 
   onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
 
-  console.log(`✅ [buildUIBlocks] 生成 ${uiBlocks.length} 个 UI Blocks`);
+  logger.info({ step: 'build_ui_blocks', blockCount: uiBlocks.length }, 'UI blocks generated');
 
   return {
     uiBlocks,
@@ -698,10 +699,10 @@ export function createInitialPlanningWorkflow() {
     'collect_missing_info',
     (state) => {
       if (state.interruption?.isInterrupted) {
-        console.log('🔴 工作流中断，等待用户输入');
+        logger.info({ step: 'collect_missing_info', action: 'interrupt' }, 'Workflow interrupted, waiting for user input');
         return 'interrupt';
       }
-      console.log('🟢 工作流继续执行');
+      logger.info({ step: 'collect_missing_info', action: 'continue' }, 'Workflow continuing');
       return 'continue';
     },
     {
@@ -716,7 +717,7 @@ export function createInitialPlanningWorkflow() {
 
   const compiledWorkflow = workflow.compile({ checkpointer });
 
-  console.log('✅ 首次计划生成工作流已构建（支持 stream + onEvent 回调）');
+  logger.info({ step: 'workflow_init' }, 'Initial planning workflow compiled (stream + onEvent)');
   return compiledWorkflow;
 }
 
@@ -729,7 +730,7 @@ export function createInitialPlanningWorkflow() {
  * @yields {{nodeName: string, state: object}} 每个节点执行后的状态快照
  */
 export async function* runInitialPlanningStream(studySpaceId, userId, initialState = {}, config = {}) {
-  console.log(`🚀 启动流式首次计划生成工作流 [spaceId: ${studySpaceId}]`);
+  logger.info({ spaceId: studySpaceId, mode: 'stream' }, 'Starting stream planning workflow');
 
   const state = {
     ...createInitialState(studySpaceId, userId),
@@ -743,7 +744,7 @@ export async function* runInitialPlanningStream(studySpaceId, userId, initialSta
 
   for await (const event of stream) {
     const [nodeName, nodeState] = Object.entries(event)[0];
-    console.log(`📡 [stream] 节点 ${nodeName} 完成, stage: ${nodeState.workflow?.stage}`);
+    logger.info({ node: nodeName, stage: nodeState.workflow?.stage }, 'Stream node completed');
     yield { nodeName, state: nodeState };
   }
 }
@@ -752,7 +753,7 @@ export async function* runInitialPlanningStream(studySpaceId, userId, initialSta
  * 同步执行工作流（用于 resume 等非 SSE 场景，保持向后兼容）
  */
 export async function runInitialPlanning(studySpaceId, userId, initialState = {}, config = {}) {
-  console.log(`🚀 启动首次计划生成工作流 [spaceId: ${studySpaceId}]`);
+  logger.info({ spaceId: studySpaceId, mode: 'invoke' }, 'Starting planning workflow');
 
   const state = {
     ...createInitialState(studySpaceId, userId),
@@ -764,7 +765,7 @@ export async function runInitialPlanning(studySpaceId, userId, initialState = {}
     configurable: { thread_id: studySpaceId, ...config?.configurable },
   });
 
-  console.log(`✅ 工作流执行完成，最终阶段: ${result.workflow.stage}`);
+  logger.info({ stage: result.workflow.stage }, 'Workflow completed');
   return result;
 }
 

@@ -226,7 +226,6 @@ router.get('/:threadId/state', async (req, res) => {
     const { threadId } = req.params;
     
     console.log(`📊 获取工作流状态 [threadId: ${threadId}]`);
-    console.log(req);
 
     // TODO: 从 checkpointer 获取状态
     // const state = await checkpointer.get({ configurable: { thread_id: threadId } });

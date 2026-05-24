@@ -10,8 +10,6 @@ export async function streamDoubaoChat(messages, agentConfig, onChunk) {
     throw new Error('ARK_API_KEY is not configured');
   }
 
-  console.log('Doubao API Key loaded:', apiKey.substring(0, 10) + '...');
-
   const systemPrompt = agentConfig?.system_prompt || 'You are a helpful AI assistant.';
   const temperature = agentConfig?.temperature || 0.7;
   const maxTokens = agentConfig?.max_tokens || 1024;
