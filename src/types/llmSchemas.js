@@ -48,7 +48,59 @@ export const TaskFrameworkSchema = z.object({
   })).optional(),
 });
 
+export const PlanningSeedSchema = z.object({
+  goal: z.object({
+    primaryGoal: z.string().optional(),
+    examDate: z.string().optional(),
+    targetScore: z.number().optional(),
+    priority: z.number().min(1).max(10).optional(),
+  }).optional(),
+  subjects: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    currentLevel: z.number().min(1).max(10).optional(),
+    targetLevel: z.number().min(1).max(10).optional(),
+    priority: z.enum(['high', 'medium', 'low']).optional(),
+    weakPoints: z.array(z.string()).optional(),
+  })).optional(),
+  availability: z.object({
+    dailyHours: z.number().optional(),
+    preferredSlots: z.array(z.string()).optional(),
+    unavailableDates: z.array(z.string()).optional(),
+    examDistance: z.number().optional(),
+  }).optional(),
+});
+
+export const ToolCallDecisionSchema = z.object({
+  toolName: z.enum(['calculator', 'weather', 'web_search']),
+  parameters: z.record(z.string(), z.any()).default({}),
+  reason: z.string().optional(),
+});
+
+export const SupervisorIntentDecisionSchema = z.object({
+  intent: z.enum([
+    'general_chat',
+    'initial_planning',
+    'tool_assisted_answer',
+    'query_plan',
+    'adjust_plan',
+    'replan',
+    'clarification',
+    'unknown'
+  ]),
+  confidence: z.number().min(0).max(1),
+  reason: z.string(),
+  certainty: z.enum(['high', 'medium', 'low']).optional(),
+  shouldUseTools: z.boolean().default(false),
+  toolCalls: z.array(ToolCallDecisionSchema).default([]),
+  planningSeed: PlanningSeedSchema.optional(),
+  responseGuidance: z.string().optional(),
+});
+
 export default {
   RiskAssessmentSchema,
   TaskFrameworkSchema,
+  PlanningSeedSchema,
+  ToolCallDecisionSchema,
+  SupervisorIntentDecisionSchema,
 };
