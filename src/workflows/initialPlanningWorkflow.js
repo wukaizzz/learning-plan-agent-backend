@@ -44,7 +44,7 @@ async function loadSpaceContext(state, config) {
   const onEvent = getOnEvent(config);
   logger.info({ spaceId: state.studySpaceId, step: 'load_space_context' }, 'Load space context');
 
-  onEvent({ type: 'workflow_step', step: 'collecting', message: '我开始检查制定计划所需的信息。', progress: 10 });
+  onEvent({ type: 'workflow_step', step: 'collecting', progress: 10 });
 
   const loadedData = {
     goal: {
@@ -163,16 +163,7 @@ async function collectMissingInfo(state, config) {
     };
 
     onEvent({ type: 'ui_block_update', action: 'add', block: collectionFormBlock });
-    onEvent({
-      type: 'info_needed',
-      question: missingFields[0].question,
-      field: missingFields[0].name,
-      fieldName: missingFields[0].name,
-      fieldLabel: missingFields[0].label,
-      fieldType: missingFields[0].type,
-      options: missingFields[0].options,
-      required: missingFields[0].required,
-    });
+    onEvent({ type: 'info_needed', question: missingFields[0].question, field: missingFields[0].name, fieldType: missingFields[0].type, options: missingFields[0].options });
 
     return {
       workflow: {
@@ -223,7 +214,7 @@ async function analyzeStudyRequirements(state, config) {
 
   const { goal, subjects, availability } = state;
 
-  onEvent({ type: 'workflow_step', step: 'analyzing', message: '我正在分析你的目标、时间和科目优先级。', progress: 40 });
+  onEvent({ type: 'workflow_step', step: 'analyzing', progress: 40 });
   onEvent({ type: 'thinking', content: '正在分析你的学习情况...\n\n' });
 
   const analysisPrompt = `你是一位专业的学习规划分析师。请深入分析以下学生的学习情况：
@@ -263,7 +254,7 @@ ${subjects.length > 0
     onEvent({ type: 'thinking_end', duration: parseFloat(thinkingDuration) });
     logger.info({ step: 'analyze_requirements', thinkingDuration, contentLength: contentText.length, model: 'deepseek-r1' }, 'R1 thinking completed');
 
-    onEvent({ type: 'workflow_step', step: 'analyzing', message: '我正在整理学习风险和策略建议。', progress: 60 });
+    onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
     onEvent({ type: 'content', content: '\n\n正在整理分析结论...\n' });
 
     const structuredPrompt = `基于以下分析，输出结构化 JSON：
@@ -327,7 +318,7 @@ async function generateStudyPlan(state, config) {
 
   const { goal, subjects, availability, riskAssessment } = state;
 
-  onEvent({ type: 'workflow_step', step: 'generating', message: '我正在把学习目标拆成可执行任务。', progress: 70 });
+  onEvent({ type: 'workflow_step', step: 'generating', progress: 70 });
   onEvent({ type: 'thinking', content: '正在规划学习任务和进度安排...\n\n' });
 
   let tasks;
@@ -392,7 +383,7 @@ ${thinkingText || planPrompt}
     tasks = generateFallbackTasks(subjects, availability);
   }
 
-  onEvent({ type: 'workflow_step', step: 'generating', message: '我正在安排任务顺序并准备计划展示。', progress: 90 });
+  onEvent({ type: 'workflow_step', step: 'generating', progress: 90 });
 
   return {
     tasksSnapshot: tasks,
@@ -533,7 +524,7 @@ async function buildUIBlocks(state, config) {
     onEvent({ type: 'ui_block_update', action: 'add', block });
   }
 
-  onEvent({ type: 'workflow_step', step: 'finalized', message: '学习计划已经生成完成。', progress: 100 });
+  onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
 
   logger.info({ step: 'build_ui_blocks', blockCount: uiBlocks.length }, 'UI blocks generated');
 

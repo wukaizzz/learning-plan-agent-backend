@@ -95,6 +95,9 @@ export const SupervisorIntentDecisionSchema = z.object({
   toolCalls: z.array(ToolCallDecisionSchema).default([]),
   planningSeed: PlanningSeedSchema.optional(),
   responseGuidance: z.string().optional(),
+  publicProcessMessage: z.string().max(80).optional(),
+  publicRouteMessage: z.string().max(100).optional(),
+  clarificationQuestion: z.string().max(120).optional(),
 });
 
 export default {

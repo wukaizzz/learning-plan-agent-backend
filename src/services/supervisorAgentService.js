@@ -1,5 +1,5 @@
 import { streamDeepSeekChat } from './deepseekService.js';
-import { structuredOutput, streamChatWithThinking } from './llmService.js';
+import { structuredOutput } from './llmService.js';
 import { executeToolHandler, getAvailableTools, isToolAllowed } from './toolService.js';
 import { runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.js';
 import { SupervisorIntentDecisionSchema } from '../types/llmSchemas.js';
@@ -9,6 +9,7 @@ import { logger } from '../logger/index.js';
 const CONFIDENCE_THRESHOLD = 0.65;
 
 const PLAN_KEYWORDS = ['学习计划', '制定计划', '生成计划', '帮我规划', '复习计划', '备考计划'];
+const INITIAL_PLAN_ACTION_KEYWORDS = ['创建', '制定', '生成', '规划', '安排', '做一个', '新建', '帮我'];
 const QUERY_PLAN_KEYWORDS = ['查看计划', '查询计划', '已有计划', '当前计划', '我的计划'];
 const ADJUST_PLAN_KEYWORDS = ['调整计划', '修改计划', '改一下计划', '调整任务', '修改任务'];
 const REPLAN_KEYWORDS = ['重新规划', '重规划', '重新制定', '重新生成计划', '重新安排'];
@@ -37,10 +38,108 @@ const UNSUPPORTED_INTENT_MESSAGES = {
   replan: '我已经识别到你想重新规划学习计划，但重规划工作流还没有开放。当前版本先不会生成新的替代计划。'
 };
 
+const PUBLIC_TEXT_BANNED_TERMS = [
+  'chain-of-thought',
+  'intent_routed',
+  'initialPlanningWorkflow',
+  'Supervisor',
+  'workflow_step',
+  'classifier',
+  'reason',
+  'LangGraph',
+  'runInitialPlanningStream'
+];
+
+const DEFAULT_PUBLIC_MESSAGES = {
+  general_chat: {
+    process: '我会直接围绕你的问题作答。',
+    route: '我会按普通问题直接回答。'
+  },
+  initial_planning: {
+    process: '我识别到你想创建新的学习计划，会先检查必要信息。',
+    route: '我会进入初次学习计划创建流程。'
+  },
+  tool_assisted_answer: {
+    process: '我会先确认是否需要工具辅助，再给出回答。',
+    route: '我会先调用必要工具，再整理结果回答你。'
+  },
+  query_plan: {
+    process: '我识别到你想查看已有学习计划。',
+    route: '当前版本还没有开放计划查询能力。'
+  },
+  adjust_plan: {
+    process: '我识别到你想调整已有学习计划。',
+    route: '当前版本还没有开放计划调整能力。'
+  },
+  replan: {
+    process: '我识别到你想重新规划学习计划。',
+    route: '当前版本还没有开放重规划能力。'
+  },
+  clarification: {
+    process: '我需要先确认你提到学习计划时想让我做什么。',
+    route: '我需要先确认你的具体处理意图。'
+  },
+  unknown: {
+    process: '我需要先确认你的具体需求。',
+    route: '我需要更多信息来继续处理。'
+  }
+};
+
+const DEFAULT_CLARIFICATION_QUESTION =
+  '你是想创建新的学习计划、查询已有计划、调整当前计划，还是只是咨询学习计划相关问题？';
+
 function emitPublicThinking(onEvent, text) {
   for (const chunk of text.match(/.{1,12}/gu) || [text]) {
     onEvent({ type: 'thinking', content: chunk });
   }
+}
+
+function isUnsafePublicText(text) {
+  if (!text || typeof text !== 'string') return true;
+  return PUBLIC_TEXT_BANNED_TERMS.some(term => text.toLowerCase().includes(term.toLowerCase()));
+}
+
+function normalizePublicText(text, fallback, maxLength = 80) {
+  const trimmed = typeof text === 'string' ? text.trim().replace(/\s+/g, ' ') : '';
+  if (!trimmed || isUnsafePublicText(trimmed)) {
+    return fallback;
+  }
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1)}…` : trimmed;
+}
+
+function getDefaultPublicMessages(intent) {
+  return DEFAULT_PUBLIC_MESSAGES[intent] || DEFAULT_PUBLIC_MESSAGES.unknown;
+}
+
+function isShortDomainNounPhrase(content) {
+  const normalized = content.trim().replace(/[，。！？,.!?]/g, '');
+  if (normalized.length === 0 || normalized.length > 6) return false;
+  if (!/(学习|复习|备考|计划)/.test(normalized)) return false;
+  return !INITIAL_PLAN_ACTION_KEYWORDS.some(keyword => normalized.includes(keyword));
+}
+
+function withPublicMessages(decision) {
+  const defaults = getDefaultPublicMessages(decision.intent);
+  const publicProcessMessage = normalizePublicText(
+    decision.publicProcessMessage,
+    defaults.process,
+    80
+  );
+  const publicRouteMessage = normalizePublicText(
+    decision.publicRouteMessage,
+    defaults.route,
+    100
+  );
+
+  return {
+    ...decision,
+    publicProcessMessage,
+    publicRouteMessage,
+    clarificationQuestion:
+      decision.intent === 'clarification' || decision.intent === 'unknown'
+        ? normalizePublicText(decision.clarificationQuestion, DEFAULT_CLARIFICATION_QUESTION, 120)
+        : undefined
+  };
 }
 
 function getLastUserMessage(messages = []) {
@@ -255,7 +354,28 @@ function inferFallbackDecision(messages = []) {
     }, 'rule_fallback');
   }
 
+  if (isShortDomainNounPhrase(content)) {
+    return buildDecision({
+      intent: 'clarification',
+      confidence: 0.6,
+      certainty: 'medium',
+      reason: '规则兜底识别到短名词短语，需要确认具体操作',
+      clarificationQuestion: DEFAULT_CLARIFICATION_QUESTION
+    }, 'rule_fallback');
+  }
+
   if (PLAN_KEYWORDS.some(keyword => content.includes(keyword))) {
+    const hasInitialPlanAction = INITIAL_PLAN_ACTION_KEYWORDS.some(keyword => content.includes(keyword));
+    if (!hasInitialPlanAction && content.trim().length <= 10) {
+      return buildDecision({
+        intent: 'clarification',
+        confidence: 0.58,
+        certainty: 'medium',
+        reason: '规则兜底识别到学习计划相关短语，但缺少明确动作',
+        clarificationQuestion: DEFAULT_CLARIFICATION_QUESTION
+      }, 'rule_fallback');
+    }
+
     return buildDecision({
       intent: 'initial_planning',
       confidence: 0.75,
@@ -306,59 +426,15 @@ ${compactMessages(messages)}
 2. initial_planning 只提取已明确给出的 goal、subjects、availability；缺失信息交给工作流收集。
 3. 如果需要工具，只选择 calculator、weather、web_search。
 4. 查询计划、调整计划、重规划要分别选择 query_plan、adjust_plan、replan，不要伪装成普通聊天。
-5. 不要把详细排课算法放在 Supervisor 中。`;
+5. “学习计划”这类短名词短语，没有明确创建、查询、调整动作时，选择 clarification。
+6. publicProcessMessage/publicRouteMessage 必须围绕最终 intent 生成，面向用户解释当前在处理什么，不要输出隐藏推理、系统提示、内部字段名、事件名、函数名或工具实现名。
+7. clarificationQuestion 只在 clarification/unknown 时填写，优先询问用户是创建新计划、查询已有计划、调整计划，还是咨询普通问题。
+8. 不要把详细排课算法放在 Supervisor 中。`;
 }
 
 async function decideIntentWithModel(messages, onEvent) {
-  const startTime = Date.now();
   const prompt = buildSupervisorPrompt(messages);
-
-  onEvent({
-    type: 'processing',
-    stage: 'intent_detection',
-    details: '我正在理解你的学习需求，判断该直接回答、调用工具，还是进入学习计划相关流程。',
-    progress: 10
-  });
-
-  let thinkingText = '';
-  try {
-    emitPublicThinking(
-      onEvent,
-      '我正在从你的消息里提取目标、上下文和操作意图，并判断是否需要工具或工作流辅助。\n'
-    );
-
-    const result = await streamChatWithThinking(prompt, {
-      onThinking: (token) => {
-        thinkingText += token;
-      },
-      onContent: (token) => {
-        thinkingText += token;
-      }
-    });
-    thinkingText = thinkingText || result.thinkingText || result.contentText || '';
-  } finally {
-    const duration = (Date.now() - startTime) / 1000;
-    onEvent({ type: 'thinking_end', duration: Number(duration.toFixed(1)) });
-  }
-
-  onEvent({
-    type: 'processing',
-    stage: 'intent_classification',
-    details: '我已经完成初步理解，正在形成结构化路由决策。',
-    progress: 25
-  });
-
-  const structuredPrompt = `基于以下 Supervisor 分析和对话，输出路由决策。
-
-Supervisor 分析：
-${thinkingText}
-
-最近对话：
-${compactMessages(messages)}
-
-只输出工具调用参数和规划初始数据，不要生成最终学习计划。`;
-
-  const decision = await structuredOutput(structuredPrompt, SupervisorIntentDecisionSchema, {
+  const decision = await structuredOutput(prompt, SupervisorIntentDecisionSchema, {
     systemPrompt: '你是学习规划系统的 Supervisor Agent。必须调用结构化输出工具返回决策。',
     toolName: 'supervisor_intent_decision'
   });
@@ -394,7 +470,7 @@ async function classifyIntent(messages, onEvent) {
 
 function normalizeDecision(decision, messages) {
   const lastUserMessage = getLastUserMessage(messages);
-  const normalized = buildDecision(decision, decision.source || 'llm');
+  const normalized = withPublicMessages(buildDecision(decision, decision.source || 'llm'));
 
   return {
     ...normalized,
@@ -402,6 +478,17 @@ function normalizeDecision(decision, messages) {
       ? normalizePlanningSeed(normalized.planningSeed, lastUserMessage?.content || '')
       : undefined
   };
+}
+
+function emitPublicProgress(onEvent, decision) {
+  onEvent({
+    type: 'processing',
+    stage: 'public_process',
+    details: decision.publicProcessMessage,
+    progress: 20
+  });
+  emitPublicThinking(onEvent, `${decision.publicProcessMessage}\n`);
+  onEvent({ type: 'thinking_end', stepId: 'public-process', duration: 0 });
 }
 
 function emitIntentRouted(onEvent, decision) {
@@ -412,7 +499,7 @@ function emitIntentRouted(onEvent, decision) {
       confidence: decision.confidence,
       source: decision.source,
       certainty: decision.certainty,
-      message: `已识别为${INTENT_LABELS[decision.intent] || '继续处理你的请求'}。`
+      message: decision.publicRouteMessage || `已识别为${INTENT_LABELS[decision.intent] || '继续处理你的请求'}。`
     }
   });
 }
@@ -522,10 +609,10 @@ function routeUnsupportedIntent({ decision, onEvent }) {
   });
 }
 
-function routeClarification({ onEvent }) {
+function routeClarification({ decision, onEvent }) {
   onEvent({
     type: 'info_needed',
-    question: '我还不确定你想让我做什么。你是想创建新学习计划、查询已有计划、调整计划，还是问一个普通问题？',
+    question: decision.clarificationQuestion || DEFAULT_CLARIFICATION_QUESTION,
     field: 'intent',
     fieldName: 'intent',
     fieldLabel: '处理意图',
@@ -572,6 +659,9 @@ export async function runSupervisorAgent({
   const classifiedDecision = await classifyIntent(messages, onEvent);
   const decision = normalizeDecision(classifiedDecision, messages);
 
+  if (decision.intent !== 'general_chat') {
+    emitPublicProgress(onEvent, decision);
+  }
   emitIntentRouted(onEvent, decision);
 
   await routeDecision({

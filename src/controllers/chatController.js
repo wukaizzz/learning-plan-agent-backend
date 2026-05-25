@@ -1,7 +1,14 @@
 import { runSupervisorAgent } from '../services/supervisorAgentService.js';
 
 export async function streamChat(req, res) {
-  const { messages, agentConfig, studySpaceId, spaceId: requestSpaceId } = req.body;
+  const {
+    messages,
+    agentConfig,
+    studySpaceId,
+    spaceId: requestSpaceId,
+    runId,
+    messageId
+  } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Invalid messages format' });
@@ -14,7 +21,12 @@ export async function streamChat(req, res) {
   try {
     const onEvent = (event) => {
       try {
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          runId,
+          messageId,
+          timestamp: Date.now(),
+          ...event
+        })}\n\n`);
       } catch (e) {
         console.warn('SSE write failed (client disconnected?):', e.message);
       }
@@ -33,6 +45,9 @@ export async function streamChat(req, res) {
   } catch (error) {
     console.error('Chat error:', error);
     res.write(`data: ${JSON.stringify({
+      runId,
+      messageId,
+      timestamp: Date.now(),
       type: 'error',
       error: error.message
     })}\n\n`);
