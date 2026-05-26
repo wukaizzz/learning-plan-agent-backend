@@ -598,28 +598,27 @@ async function routeInitialPlanning({ decision, agentConfig, studySpaceId, reque
       configurable: { onEvent, executionId }
     });
 
+    let reachedFinalized = false;
+
     for await (const { state: nodeState } of stream) {
       if (nodeState.interruption?.isInterrupted) {
         continue;
       }
 
       if (nodeState.workflow?.stage === 'finalized') {
+        reachedFinalized = true;
         const taskCount = nodeState.tasksSnapshot?.length || 0;
         const planVersion = nodeState.currentPlan?.versionNumber || 1;
         onEvent({
           type: 'content',
           content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
         });
-        onEvent({
-          type: 'analysis_result',
-          summary: '学习计划生成完成',
-          findings: [`已生成 ${taskCount} 个学习任务`, `计划版本：v${planVersion}`],
-          recommendations: ['建议每天按时完成计划任务', '可以根据实际情况调整任务优先级']
-        });
       }
     }
 
-    onEvent({ type: 'agent_execution_finish', executionId, status: 'completed' });
+    if (reachedFinalized) {
+      onEvent({ type: 'agent_execution_finish', executionId, status: 'completed' });
+    }
   } catch (error) {
     logger.error({ err: error.message, executionId }, 'Initial planning workflow failed');
     onEvent({

@@ -6,7 +6,7 @@
 import express from 'express';
 import { createInitialState } from '../types/workflowState.js';
 import { checkpointer } from '../utils/checkpointer.js';
-import { runInitialPlanning } from '../workflows/initialPlanningWorkflow.js';
+import { runInitialPlanning, runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.js';
 import { parseFormData } from '../utils/formDataParser.js';
 
 const router = express.Router();
@@ -180,6 +180,91 @@ router.post('/:threadId/resume', async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+/**
+ * 流式恢复中断的工作流
+ * POST /api/workflows/:threadId/resume-stream
+ */
+router.post('/:threadId/resume-stream', async (req, res) => {
+  const { threadId } = req.params;
+  const { executionId, messageId, ...userInput } = req.body;
+
+  if (!executionId) {
+    return res.status(400).json({ error: 'executionId is required' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const onEvent = (event) => {
+    try {
+      res.write(`data: ${JSON.stringify({
+        messageId,
+        timestamp: Date.now(),
+        ...event
+      })}\n\n`);
+    } catch (e) {
+      console.warn('SSE write failed:', e.message);
+    }
+  };
+
+  try {
+    const parsedData = parseFormData(userInput);
+
+    let previousState = null;
+    try {
+      const checkpoint = await checkpointer.get({ configurable: { thread_id: threadId } });
+      if (checkpoint) previousState = checkpoint.values;
+    } catch (e) { /* ignore */ }
+
+    const baseState = previousState || createInitialState(threadId, userInput.userId || 'default-user');
+    const updatedState = {
+      ...deepMerge(baseState, parsedData),
+      studySpaceId: threadId,
+      interruption: null
+    };
+
+    const stream = runInitialPlanningStream(threadId, userInput.userId || 'default-user', updatedState, {
+      configurable: { onEvent, executionId }
+    });
+
+    let reachedFinalized = false;
+
+    for await (const { state: nodeState } of stream) {
+      if (nodeState.interruption?.isInterrupted) {
+        onEvent({ type: 'workflow_step', step: 'paused', progress: 20 });
+        continue;
+      }
+      if (nodeState.workflow?.stage === 'finalized') {
+        reachedFinalized = true;
+        const taskCount = nodeState.tasksSnapshot?.length || 0;
+        const planVersion = nodeState.currentPlan?.versionNumber || 1;
+        onEvent({
+          type: 'content',
+          content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
+        });
+      }
+    }
+
+    if (reachedFinalized) {
+      onEvent({ type: 'agent_execution_finish', executionId, status: 'completed' });
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (error) {
+    console.error('Resume stream error:', error);
+    onEvent({
+      type: 'agent_execution_finish',
+      executionId,
+      status: 'failed',
+      summary: error.message || '工作流恢复失败'
+    });
+    res.write('data: [DONE]\n\n');
+    res.end();
   }
 });
 

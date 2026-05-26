@@ -252,7 +252,6 @@ async function analyzeStudyRequirements(state, config) {
   const { goal, subjects, availability } = state;
 
   onEvent({ type: 'workflow_step', step: 'analyzing', progress: 40 });
-  onEvent({ type: 'thinking', content: '正在分析你的学习情况...\n\n' });
   emitAgentStep(config, { stepId: 'analyze_requirements', status: 'running', title: '分析学习需求' });
 
   const analysisPrompt = `你是一位专业的学习规划分析师。请深入分析以下学生的学习情况：
@@ -293,7 +292,6 @@ ${subjects.length > 0
     logger.info({ step: 'analyze_requirements', thinkingDuration, contentLength: contentText.length, model: 'deepseek-r1' }, 'R1 thinking completed');
 
     onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
-    onEvent({ type: 'content', content: '\n\n正在整理分析结论...\n' });
 
     const structuredPrompt = `基于以下分析，输出结构化 JSON：
 
@@ -334,7 +332,6 @@ ${contentText}
 
   } catch (error) {
     logger.error({ step: 'analyze_requirements', err: error.message }, 'R1/structured call failed, fallback to rules');
-    onEvent({ type: 'content', content: '\n\n（使用规则分析引擎）\n' });
 
     riskAssessment = buildFallbackRiskAssessment(goal, subjects, availability);
   }
@@ -364,7 +361,6 @@ async function generateStudyPlan(state, config) {
   const { goal, subjects, availability, riskAssessment } = state;
 
   onEvent({ type: 'workflow_step', step: 'generating', progress: 70 });
-  onEvent({ type: 'thinking', content: '正在规划学习任务和进度安排...\n\n' });
   emitAgentStep(config, { stepId: 'generate_plan', status: 'running', title: '生成学习计划' });
 
   let tasks;
@@ -424,7 +420,6 @@ ${thinkingText || planPrompt}
 
   } catch (error) {
     logger.error({ step: 'generate_plan', err: error.message }, 'V3 call failed, fallback to rules');
-    onEvent({ type: 'content', content: '\n\n（使用规则引擎生成计划）\n' });
 
     tasks = generateFallbackTasks(subjects, availability);
   }
