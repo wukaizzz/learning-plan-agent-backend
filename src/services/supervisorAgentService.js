@@ -5,6 +5,7 @@ import { runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.j
 import { SupervisorIntentDecisionSchema } from '../types/llmSchemas.js';
 import { generateId } from '../utils/idGenerator.js';
 import { logger } from '../logger/index.js';
+import { randomUUID } from 'crypto';
 
 const CONFIDENCE_THRESHOLD = 0.65;
 
@@ -576,29 +577,57 @@ async function routeGeneralChat({ messages, agentConfig, onEvent, toolResults = 
 async function routeInitialPlanning({ decision, agentConfig, studySpaceId, requestSpaceId, onEvent }) {
   const spaceId = studySpaceId || requestSpaceId || agentConfig?.studySpaceId || generateId('space_');
   const userId = agentConfig?.userId || 'default-user';
-  const stream = runInitialPlanningStream(spaceId, userId, decision.planningSeed || {}, {
-    configurable: { onEvent }
+  const executionId = randomUUID();
+
+  onEvent({
+    type: 'agent_execution_start',
+    executionId,
+    title: '创建学习计划',
+    steps: [
+      { stepId: 'load_space_context', title: '读取学习空间上下文' },
+      { stepId: 'collect_missing_info', title: '检查计划所需信息' },
+      { stepId: 'analyze_requirements', title: '分析学习需求' },
+      { stepId: 'generate_plan', title: '生成学习计划' },
+      { stepId: 'build_ui_blocks', title: '构建计划展示' }
+    ],
+    metadata: { spaceId, userId }
   });
 
-  for await (const { state: nodeState } of stream) {
-    if (nodeState.interruption?.isInterrupted) {
-      continue;
+  try {
+    const stream = runInitialPlanningStream(spaceId, userId, decision.planningSeed || {}, {
+      configurable: { onEvent, executionId }
+    });
+
+    for await (const { state: nodeState } of stream) {
+      if (nodeState.interruption?.isInterrupted) {
+        continue;
+      }
+
+      if (nodeState.workflow?.stage === 'finalized') {
+        const taskCount = nodeState.tasksSnapshot?.length || 0;
+        const planVersion = nodeState.currentPlan?.versionNumber || 1;
+        onEvent({
+          type: 'content',
+          content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
+        });
+        onEvent({
+          type: 'analysis_result',
+          summary: '学习计划生成完成',
+          findings: [`已生成 ${taskCount} 个学习任务`, `计划版本：v${planVersion}`],
+          recommendations: ['建议每天按时完成计划任务', '可以根据实际情况调整任务优先级']
+        });
+      }
     }
 
-    if (nodeState.workflow?.stage === 'finalized') {
-      const taskCount = nodeState.tasksSnapshot?.length || 0;
-      const planVersion = nodeState.currentPlan?.versionNumber || 1;
-      onEvent({
-        type: 'content',
-        content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
-      });
-      onEvent({
-        type: 'analysis_result',
-        summary: '学习计划生成完成',
-        findings: [`已生成 ${taskCount} 个学习任务`, `计划版本：v${planVersion}`],
-        recommendations: ['建议每天按时完成计划任务', '可以根据实际情况调整任务优先级']
-      });
-    }
+    onEvent({ type: 'agent_execution_finish', executionId, status: 'completed' });
+  } catch (error) {
+    logger.error({ err: error.message, executionId }, 'Initial planning workflow failed');
+    onEvent({
+      type: 'agent_execution_finish',
+      executionId,
+      status: 'failed',
+      summary: error.message || '学习计划生成失败'
+    });
   }
 }
 

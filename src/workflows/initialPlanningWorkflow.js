@@ -36,6 +36,26 @@ function getOnEvent(config) {
   return config?.configurable?.onEvent || (() => {});
 }
 
+function getExecutionId(config) {
+  return config?.configurable?.executionId;
+}
+
+function emitAgentStep(config, { stepId, status, title, summary, description, metadata }) {
+  const onEvent = getOnEvent(config);
+  const executionId = getExecutionId(config);
+  if (!executionId) return;
+  onEvent({
+    type: 'agent_step_update',
+    executionId,
+    stepId,
+    status,
+    ...(title ? { title } : {}),
+    ...(summary ? { summary } : {}),
+    ...(description ? { description } : {}),
+    ...(metadata ? { metadata } : {})
+  });
+}
+
 // ============================================================
 // 节点函数实现
 // ============================================================
@@ -45,6 +65,7 @@ async function loadSpaceContext(state, config) {
   logger.info({ spaceId: state.studySpaceId, step: 'load_space_context' }, 'Load space context');
 
   onEvent({ type: 'workflow_step', step: 'collecting', progress: 10 });
+  emitAgentStep(config, { stepId: 'load_space_context', status: 'running', title: '读取学习空间上下文' });
 
   const loadedData = {
     goal: {
@@ -66,6 +87,15 @@ async function loadSpaceContext(state, config) {
       examDistance: state.availability.examDistance || 30
     }
   };
+
+  const goalText = loadedData.goal.primaryGoal;
+  const subjectCount = loadedData.subjects.length;
+  const dailyHours = loadedData.availability.dailyHours;
+  emitAgentStep(config, {
+    stepId: 'load_space_context',
+    status: 'completed',
+    summary: `目标「${goalText}」，${subjectCount} 个科目，每日可用 ${dailyHours} 小时`
+  });
 
   return {
     ...loadedData,
@@ -89,6 +119,7 @@ async function loadSpaceContext(state, config) {
 async function collectMissingInfo(state, config) {
   const onEvent = getOnEvent(config);
   logger.info({ step: 'collect_missing_info' }, 'Check missing info');
+  emitAgentStep(config, { stepId: 'collect_missing_info', status: 'running', title: '检查计划所需信息' });
 
   const missingFields = [];
 
@@ -164,6 +195,11 @@ async function collectMissingInfo(state, config) {
 
     onEvent({ type: 'ui_block_update', action: 'add', block: collectionFormBlock });
     onEvent({ type: 'info_needed', question: missingFields[0].question, field: missingFields[0].name, fieldType: missingFields[0].type, options: missingFields[0].options });
+    emitAgentStep(config, {
+      stepId: 'collect_missing_info',
+      status: 'waiting_input',
+      summary: `需补充：${missingFields.map(f => f.label).join('、')}`
+    });
 
     return {
       workflow: {
@@ -190,6 +226,7 @@ async function collectMissingInfo(state, config) {
   }
 
   logger.info({ step: 'collect_missing_info', action: 'continue' }, 'Info complete, continuing');
+  emitAgentStep(config, { stepId: 'collect_missing_info', status: 'completed', summary: '所有必要信息已齐全，继续分析' });
   return {
     workflow: {
       ...state.workflow,
@@ -216,6 +253,7 @@ async function analyzeStudyRequirements(state, config) {
 
   onEvent({ type: 'workflow_step', step: 'analyzing', progress: 40 });
   onEvent({ type: 'thinking', content: '正在分析你的学习情况...\n\n' });
+  emitAgentStep(config, { stepId: 'analyze_requirements', status: 'running', title: '分析学习需求' });
 
   const analysisPrompt = `你是一位专业的学习规划分析师。请深入分析以下学生的学习情况：
 
@@ -279,6 +317,13 @@ ${contentText}
 
     onEvent({ type: 'analysis_result', summary: riskAssessment.prediction, findings: riskAssessment.factors.map(f => f.description), recommendations: riskAssessment.suggestedActions });
 
+    const highPrioritySubjects = (riskAssessment.subjectPriorities || []).filter(s => s.priorityLevel === 'high').map(s => s.subjectName);
+    emitAgentStep(config, {
+      stepId: 'analyze_requirements',
+      status: 'completed',
+      summary: `距离考试 ${availability.examDistance} 天，风险等级：${riskAssessment.level}${highPrioritySubjects.length > 0 ? `，重点：${highPrioritySubjects.join('、')}` : ''}`
+    });
+
     logger.info({
       step: 'analyze_requirements',
       model: 'deepseek-v3',
@@ -320,6 +365,7 @@ async function generateStudyPlan(state, config) {
 
   onEvent({ type: 'workflow_step', step: 'generating', progress: 70 });
   onEvent({ type: 'thinking', content: '正在规划学习任务和进度安排...\n\n' });
+  emitAgentStep(config, { stepId: 'generate_plan', status: 'running', title: '生成学习计划' });
 
   let tasks;
   let planStrategy = '';
@@ -383,6 +429,13 @@ ${thinkingText || planPrompt}
     tasks = generateFallbackTasks(subjects, availability);
   }
 
+  const uniqueSubjects = new Set(tasks.map(t => t.subjectId)).size;
+  emitAgentStep(config, {
+    stepId: 'generate_plan',
+    status: 'completed',
+    summary: `已生成 ${tasks.length} 个学习任务，覆盖 ${uniqueSubjects} 个学科`
+  });
+
   onEvent({ type: 'workflow_step', step: 'generating', progress: 90 });
 
   return {
@@ -416,6 +469,7 @@ ${thinkingText || planPrompt}
 async function buildUIBlocks(state, config) {
   const onEvent = getOnEvent(config);
   logger.info({ step: 'build_ui_blocks' }, 'Building UI blocks');
+  emitAgentStep(config, { stepId: 'build_ui_blocks', status: 'running', title: '构建计划展示' });
 
   const { goal, subjects, tasksSnapshot, availability, riskAssessment, currentPlan } = state;
 
@@ -523,6 +577,12 @@ async function buildUIBlocks(state, config) {
   for (const block of uiBlocks) {
     onEvent({ type: 'ui_block_update', action: 'add', block });
   }
+
+  emitAgentStep(config, {
+    stepId: 'build_ui_blocks',
+    status: 'completed',
+    summary: `已生成 ${uiBlocks.length} 个展示组件：${uiBlocks.map(b => b.title).join('、')}`
+  });
 
   onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
 
