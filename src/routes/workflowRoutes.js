@@ -8,37 +8,9 @@ import { createInitialState } from '../types/workflowState.js';
 import { checkpointer } from '../utils/checkpointer.js';
 import { runInitialPlanning, runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.js';
 import { parseFormData } from '../utils/formDataParser.js';
+import { deepMerge } from '../utils/deepMerge.js';
 
 const router = express.Router();
-
-function deepMerge(base, updates) {
-  if (!updates || typeof updates !== 'object') {
-    return base;
-  }
-
-  const merged = Array.isArray(base) ? [...base] : { ...base };
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (value === undefined) {
-      continue;
-    }
-
-    if (
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      merged[key] &&
-      typeof merged[key] === 'object' &&
-      !Array.isArray(merged[key])
-    ) {
-      merged[key] = deepMerge(merged[key], value);
-    } else {
-      merged[key] = value;
-    }
-  }
-
-  return merged;
-}
 
 /**
  * 启动首次计划生成工作流
@@ -240,12 +212,6 @@ router.post('/:threadId/resume-stream', async (req, res) => {
       }
       if (nodeState.workflow?.stage === 'finalized') {
         reachedFinalized = true;
-        const taskCount = nodeState.tasksSnapshot?.length || 0;
-        const planVersion = nodeState.currentPlan?.versionNumber || 1;
-        onEvent({
-          type: 'content',
-          content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
-        });
       }
     }
 

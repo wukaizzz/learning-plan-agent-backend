@@ -4,6 +4,7 @@ import { executeToolHandler, getAvailableTools, isToolAllowed } from './toolServ
 import { runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.js';
 import { SupervisorIntentDecisionSchema } from '../types/llmSchemas.js';
 import { generateId } from '../utils/idGenerator.js';
+import { deepMerge } from '../utils/deepMerge.js';
 import { logger } from '../logger/index.js';
 import { randomUUID } from 'crypto';
 
@@ -178,7 +179,6 @@ function certaintyFromConfidence(confidence = 0) {
 function extractPlanningSeed(content) {
   const seed = {
     goal: {
-      primaryGoal: content || '生成学习计划',
       priority: 5
     },
     subjects: [],
@@ -574,10 +574,21 @@ async function routeGeneralChat({ messages, agentConfig, onEvent, toolResults = 
   await streamDeepSeekChat(responseMessages, agentConfig, onEvent);
 }
 
-async function routeInitialPlanning({ decision, agentConfig, studySpaceId, requestSpaceId, onEvent }) {
+async function routeInitialPlanning({ decision, agentConfig, studySpaceId, requestSpaceId, studySpaceContext, onEvent }) {
   const spaceId = studySpaceId || requestSpaceId || agentConfig?.studySpaceId || generateId('space_');
   const userId = agentConfig?.userId || 'default-user';
   const executionId = randomUUID();
+  const mergedPlanningSeed = deepMerge(studySpaceContext || {}, decision.planningSeed || {});
+
+  logger.info({
+    tag: '[DEBUG-planning-seed]',
+    hasStudySpaceContext: !!studySpaceContext,
+    studySpaceGoal: studySpaceContext?.goal,
+    decisionGoal: decision.planningSeed?.goal,
+    mergedGoal: mergedPlanningSeed.goal,
+    mergedSubjectsCount: mergedPlanningSeed.subjects?.length ?? 0,
+    mergedAvailability: mergedPlanningSeed.availability
+  }, 'Initial planning seed merged'); // TODO examDate
 
   onEvent({
     type: 'agent_execution_start',
@@ -594,7 +605,7 @@ async function routeInitialPlanning({ decision, agentConfig, studySpaceId, reque
   });
 
   try {
-    const stream = runInitialPlanningStream(spaceId, userId, decision.planningSeed || {}, {
+    const stream = runInitialPlanningStream(spaceId, userId, mergedPlanningSeed, {
       configurable: { onEvent, executionId }
     });
 
@@ -607,12 +618,6 @@ async function routeInitialPlanning({ decision, agentConfig, studySpaceId, reque
 
       if (nodeState.workflow?.stage === 'finalized') {
         reachedFinalized = true;
-        const taskCount = nodeState.tasksSnapshot?.length || 0;
-        const planVersion = nodeState.currentPlan?.versionNumber || 1;
-        onEvent({
-          type: 'content',
-          content: `\n\n我已经为你生成了学习计划！\n\n计划概览：\n- 总任务数：${taskCount} 个\n- 计划版本：v${planVersion}\n\n你可以查看下方的详细计划，并根据需要进行调整。`
-        });
       }
     }
 
@@ -681,6 +686,7 @@ export async function runSupervisorAgent({
   messages,
   agentConfig,
   studySpaceId,
+  studySpaceContext,
   requestSpaceId,
   onEvent = () => {}
 }) {
@@ -696,6 +702,7 @@ export async function runSupervisorAgent({
     messages,
     agentConfig,
     studySpaceId,
+    studySpaceContext,
     requestSpaceId,
     decision,
     onEvent

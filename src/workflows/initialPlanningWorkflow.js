@@ -119,6 +119,23 @@ async function loadSpaceContext(state, config) {
 async function collectMissingInfo(state, config) {
   const onEvent = getOnEvent(config);
   logger.info({ step: 'collect_missing_info' }, 'Check missing info');
+  
+  logger.info({
+    tag: '[DEBUG-collect-missing]',
+    goal: state.goal,
+    subjectsCount: state.subjects?.length ?? 0,
+    subjects: state.subjects?.map(subject => ({
+      id: subject.id,
+      name: subject.name,
+      currentLevel: subject.currentLevel,
+      targetLevel: subject.targetLevel,
+      priority: subject.priority
+    })),
+    availability: state.availability,
+    hasExamDate: !!state.goal?.examDate,
+    hasTargetScore: !!state.goal?.targetScore
+  }, 'Collect missing info state');  // TODO  examDate
+
   emitAgentStep(config, { stepId: 'collect_missing_info', status: 'running', title: '检查计划所需信息' });
 
   const missingFields = [];
@@ -281,9 +298,6 @@ ${subjects.length > 0
     const { thinkingText, contentText } = await streamReasoner(analysisPrompt, {
       onThinking: (token) => {
         onEvent({ type: 'thinking', content: token });
-      },
-      onContent: (token) => {
-        onEvent({ type: 'content', content: token });
       }
     });
 
@@ -293,10 +307,11 @@ ${subjects.length > 0
 
     onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
 
+    const analysisSource = contentText || thinkingText || analysisPrompt;
     const structuredPrompt = `基于以下分析，输出结构化 JSON：
 
 分析内容：
-${contentText}
+${analysisSource}
 
 请严格按照以下 JSON 格式输出：
 {
@@ -376,7 +391,7 @@ async function generateStudyPlan(state, config) {
 每日可用时间：${availability.dailyHours} 小时
 
 科目信息：
-${subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10，优先级 ${s.priority}`).join('\n')}
+${subjects.map(s => `- ID: ${s.id}，名称：${s.name}，当前水平 ${s.currentLevel}/10，目标水平 ${s.targetLevel}/10，优先级 ${s.priority}`).join('\n')}
 
 风险评估：${riskAssessment?.level || 'unknown'}，${riskAssessment?.prediction || ''}
 建议策略：${riskAssessment?.suggestedActions?.join('；') || ''}
@@ -386,26 +401,24 @@ ${subjects.map(s => `- ${s.name}：当前水平 ${s.currentLevel}/10，目标水
 2. 任务的优先级和预估时长
 3. 分阶段安排建议
 
-注意：只需输出任务框架（任务名称、类型、优先级、预估小时数），具体日期和时间由系统自动分配。`;
+注意：只需输出任务框架（任务名称、类型、优先级、预估小时数），具体日期和时间由系统自动分配。任务 subjectId 必须使用上方科目列表里的 ID。`;
 
-    const { thinkingText } = await streamChatWithThinking(planPrompt, {
+    const { thinkingText, contentText } = await streamChatWithThinking(planPrompt, {
       onThinking: (token) => {
         onEvent({ type: 'thinking', content: token });
-      },
-      onContent: (token) => {
-        onEvent({ type: 'content', content: token });
       }
     });
 
     onEvent({ type: 'thinking_end', duration: 0 });
 
+    const planSource = contentText || thinkingText || planPrompt;
     const structuredPlanPrompt = `基于以下规划思考，输出结构化 JSON：
 
-${thinkingText || planPrompt}
+${planSource}
 
 请严格按照以下 JSON 格式输出：
 {
-  "tasks": [{ "subjectId": "科目ID", "subjectName": "科目名", "title": "任务标题", "type": "study" | "practice" | "review", "priority": 1-10, "estimatedHours": 数字, "description": "描述" }],
+  "tasks": [{ "subjectId": "必须是上方科目列表里的 ID", "subjectName": "科目名", "title": "任务标题", "type": "study" | "practice" | "review", "priority": 1-10, "estimatedHours": 数字, "description": "描述" }],
   "strategy": "整体策略文本",
   "totalEstimatedHours": 数字
 }`;
@@ -424,11 +437,14 @@ ${thinkingText || planPrompt}
     tasks = generateFallbackTasks(subjects, availability);
   }
 
-  const uniqueSubjects = new Set(tasks.map(t => t.subjectId)).size;
+  const coveredSubjectIds = new Set(tasks
+    .map(t => t.subjectId)
+    .filter(subjectId => subjects.some(subject => subject.id === subjectId)));
+  const hasComprehensiveReview = tasks.some(t => t.subjectId === 'all');
   emitAgentStep(config, {
     stepId: 'generate_plan',
     status: 'completed',
-    summary: `已生成 ${tasks.length} 个学习任务，覆盖 ${uniqueSubjects} 个学科`
+    summary: `已生成 ${tasks.length} 个排期任务，覆盖 ${coveredSubjectIds.size} 个科目${hasComprehensiveReview ? '，另含综合复习' : ''}`
   });
 
   onEvent({ type: 'workflow_step', step: 'generating', progress: 90 });
@@ -466,7 +482,7 @@ async function buildUIBlocks(state, config) {
   logger.info({ step: 'build_ui_blocks' }, 'Building UI blocks');
   emitAgentStep(config, { stepId: 'build_ui_blocks', status: 'running', title: '构建计划展示' });
 
-  const { goal, subjects, tasksSnapshot, availability, riskAssessment, currentPlan } = state;
+  const { goal, subjects, tasksSnapshot, availability, riskAssessment } = state;
 
   const tasksByDate = {};
   for (const task of tasksSnapshot) {
@@ -477,7 +493,13 @@ async function buildUIBlocks(state, config) {
   }
 
   const today = new Date().toISOString().split('T')[0];
-  const todayTasks = tasksSnapshot.filter(t => t.scheduledDate === today);
+  const examDate = resolveExamDate(goal, availability);
+  const displayedTasks = selectDisplayTasks(tasksSnapshot, today);
+  const displayDate = displayedTasks[0]?.scheduledDate || today;
+  const daysRemaining = calculateDaysRemaining(examDate, availability);
+  const currentScore = calculateWeightedCurrentScore(subjects);
+  const timelineEvents = buildTimelineEvents(tasksByDate, today, examDate);
+  const scheduleGroups = buildScheduleGroups(tasksByDate, subjects);
 
   const uiBlocks = [
     {
@@ -490,9 +512,9 @@ async function buildUIBlocks(state, config) {
         spaceDescription: goal.primaryGoal || '个性化学习计划',
         primaryGoal: goal.primaryGoal || '完成学习目标',
         targetScore: goal.targetScore || 85,
-        currentScore: 0,
-        examDate: goal.examDate || new Date(Date.now() + availability.examDistance * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        daysRemaining: availability.examDistance,
+        currentScore,
+        examDate,
+        daysRemaining,
         overallProgress: 0,
         subjects: subjects.map(s => ({
           name: s.name,
@@ -507,17 +529,12 @@ async function buildUIBlocks(state, config) {
       title: '今日任务',
       order: 2,
       props: {
-        date: today,
-        tasks: (todayTasks.length > 0 ? todayTasks : tasksSnapshot.slice(0, 5)).map(t => ({
-          id: t.id,
-          subject: subjects.find(s => s.id === t.subjectId)?.name || '未知科目',
-          task: t.title,
-          duration: t.estimatedMinutes,
-          priority: t.priority >= 7 ? 'high' : t.priority >= 5 ? 'medium' : 'low',
-          status: 'pending',
-          estimatedTime: ''
-        })),
-        totalDuration: todayTasks.reduce((sum, t) => sum + t.estimatedMinutes, 0) || 120,
+        date: displayDate,
+        tasks: displayedTasks.map(t => mapTaskForDailyList(t, subjects)),
+        totalTaskCount: tasksSnapshot.length,
+        displayedTaskCount: displayedTasks.length,
+        scheduleGroups,
+        totalDuration: displayedTasks.reduce((sum, t) => sum + t.estimatedMinutes, 0),
         completionRate: 0
       }
     },
@@ -527,19 +544,14 @@ async function buildUIBlocks(state, config) {
       title: '学习时间线',
       order: 3,
       props: {
-        startDate: new Date().toISOString().split('T')[0],
-        endDate: goal.examDate || new Date(Date.now() + availability.examDistance * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        events: Object.entries(tasksByDate).slice(0, 10).map(([date, dateTasks]) => ({
-          date,
-          title: `${dateTasks.length} 个任务`,
-          type: 'study_session',
-          importance: 'medium'
-        }))
+        startDate: today,
+        endDate: examDate,
+        events: timelineEvents
       }
     }
   ];
 
-  if (riskAssessment && riskAssessment.level !== 'low') {
+  if (riskAssessment && riskAssessment.level !== 'low' && riskAssessment.factors?.length > 0) {
     uiBlocks.push({
       id: 'risk_alert',
       type: 'risk-alert',
@@ -547,7 +559,7 @@ async function buildUIBlocks(state, config) {
       order: 4,
       props: {
         risks: riskAssessment.factors.map(f => ({
-          type: f.type,
+          type: mapRiskType(f.type),
           severity: f.severity >= 7 ? 'high' : f.severity >= 4 ? 'medium' : 'low',
           message: f.description,
           suggestion: riskAssessment.suggestedActions?.[0] || ''
@@ -556,18 +568,18 @@ async function buildUIBlocks(state, config) {
     });
   }
 
-  uiBlocks.push({
-    id: 'action_bar',
-    type: 'action-bar',
-    title: '操作选项',
-    order: 99,
-    props: {
-      actions: [
-        { id: 'start_today', label: '从今天开始', type: 'primary' },
-        { id: 'adjust_plan', label: '调整计划', type: 'secondary' }
-      ]
-    }
-  });
+  const actionBarActions = [];
+  if (actionBarActions.length > 0) {
+    uiBlocks.push({
+      id: 'action_bar',
+      type: 'action-bar',
+      title: '操作选项',
+      order: 99,
+      props: {
+        actions: actionBarActions
+      }
+    });
+  }
 
   for (const block of uiBlocks) {
     onEvent({ type: 'ui_block_update', action: 'add', block });
@@ -580,6 +592,7 @@ async function buildUIBlocks(state, config) {
   });
 
   onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
+  onEvent({ type: 'content', content: '学习计划已生成，右侧已整理为概览、任务和时间线。' });
 
   logger.info({ step: 'build_ui_blocks', blockCount: uiBlocks.length }, 'UI blocks generated');
 
@@ -602,6 +615,234 @@ async function buildUIBlocks(state, config) {
   };
 }
 
+function toISODate(date) {
+  return date.toISOString().split('T')[0];
+}
+
+function resolveExamDate(goal, availability) {
+  if (goal.examDate) {
+    return goal.examDate;
+  }
+
+  const fallbackDate = new Date();
+  fallbackDate.setDate(fallbackDate.getDate() + (availability.examDistance || 0));
+  return toISODate(fallbackDate);
+}
+
+function calculateDaysRemaining(examDate, availability) {
+  const examTime = new Date(examDate).getTime();
+  if (Number.isNaN(examTime)) {
+    return availability.examDistance || 0;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.ceil((examTime - today.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
+function getPriorityWeight(priority) {
+  const weights = { high: 3, medium: 2, low: 1 };
+  if (typeof priority === 'number') {
+    return priority;
+  }
+  return weights[priority] || 1;
+}
+
+function calculateWeightedCurrentScore(subjects) {
+  if (!subjects.length) {
+    return 0;
+  }
+
+  const weighted = subjects.reduce((acc, subject) => {
+    const weight = getPriorityWeight(subject.priority);
+    return {
+      total: acc.total + subject.currentLevel * weight,
+      weight: acc.weight + weight
+    };
+  }, { total: 0, weight: 0 });
+
+  if (!weighted.weight) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round((weighted.total / weighted.weight) * 10)));
+}
+
+function normalizeComparableText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function includesText(source, target) {
+  const normalizedSource = normalizeComparableText(source);
+  const normalizedTarget = normalizeComparableText(target);
+  return !!normalizedSource && !!normalizedTarget && normalizedSource.includes(normalizedTarget);
+}
+
+function isComprehensiveReviewTask(task) {
+  const text = [
+    task.subjectId,
+    task.subjectName,
+    task.title,
+    task.description
+  ].map(normalizeComparableText).join(' ');
+
+  return task.type === 'review' && (
+    text.includes('综合') ||
+    text.includes('全科') ||
+    text.includes('全部') ||
+    text.includes('所有') ||
+    text.includes('all subjects')
+  );
+}
+
+function resolveTaskSubjectId(task, subjects) {
+  const fallbackSubject = subjects[0];
+  if (!fallbackSubject) {
+    return 'general';
+  }
+
+  if (isComprehensiveReviewTask(task)) {
+    return 'all';
+  }
+
+  const rawSubjectId = normalizeComparableText(task.subjectId);
+  const directIdMatch = subjects.find(subject => normalizeComparableText(subject.id) === rawSubjectId);
+  if (directIdMatch) {
+    return directIdMatch.id;
+  }
+
+  const rawSubjectName = normalizeComparableText(task.subjectName);
+  const directNameMatch = subjects.find(subject => normalizeComparableText(subject.name) === rawSubjectName);
+  if (directNameMatch) {
+    return directNameMatch.id;
+  }
+
+  const searchableText = [
+    task.subjectId,
+    task.subjectName,
+    task.title,
+    task.description
+  ].join(' ');
+
+  const containedSubject = subjects.find(subject =>
+    includesText(searchableText, subject.id) || includesText(searchableText, subject.name)
+  );
+
+  return containedSubject?.id || fallbackSubject.id;
+}
+
+function getTaskSubjectName(task, subjects) {
+  if (task.subjectId === 'all') {
+    return '综合复习';
+  }
+
+  return subjects.find(subject => subject.id === task.subjectId)?.name || subjects[0]?.name || '未知科目';
+}
+
+function mapPriority(priority) {
+  return priority >= 7 ? 'high' : priority >= 5 ? 'medium' : 'low';
+}
+
+function mapTaskStatus(status) {
+  const validStatuses = new Set(['pending', 'in_progress', 'completed', 'skipped']);
+  return validStatuses.has(status) ? status : 'pending';
+}
+
+function mapTaskForDailyList(task, subjects) {
+  return {
+    id: task.id,
+    subject: getTaskSubjectName(task, subjects),
+    task: task.title,
+    duration: task.estimatedMinutes,
+    priority: mapPriority(task.priority),
+    status: mapTaskStatus(task.status),
+    estimatedTime: ''
+  };
+}
+
+function formatScheduleGroupLabel(dateString) {
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) {
+    return dateString;
+  }
+
+  return date.toLocaleDateString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short'
+  });
+}
+
+function buildScheduleGroups(tasksByDate, subjects) {
+  return Object.keys(tasksByDate)
+    .sort()
+    .map(date => ({
+      date,
+      label: formatScheduleGroupLabel(date),
+      tasks: tasksByDate[date].map(task => mapTaskForDailyList(task, subjects))
+    }));
+}
+
+function selectDisplayTasks(tasksSnapshot, today) {
+  const sortedTasks = [...tasksSnapshot].sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
+  const todayTasks = sortedTasks.filter(task => task.scheduledDate === today);
+  if (todayTasks.length > 0) {
+    return todayTasks.slice(0, 5);
+  }
+
+  const nextTask = sortedTasks.find(task => task.scheduledDate >= today);
+  if (nextTask) {
+    return sortedTasks.filter(task => task.scheduledDate === nextTask.scheduledDate).slice(0, 5);
+  }
+
+  const firstTask = sortedTasks[0];
+  return firstTask ? sortedTasks.filter(task => task.scheduledDate === firstTask.scheduledDate).slice(0, 5) : [];
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function buildTimelineEvents(tasksByDate, startDate, examDate) {
+  const taskDates = Object.keys(tasksByDate).sort();
+  const start = new Date(taskDates[0] || startDate);
+  const end = new Date(examDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return taskDates.slice(0, 3).map((date, index) => ({
+      date,
+      title: ['基础巩固阶段', '强化训练阶段', '冲刺复盘阶段'][index] || '阶段任务',
+      type: 'milestone',
+      importance: index === 2 ? 'high' : 'medium'
+    }));
+  }
+
+  const totalDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
+  const events = [
+    { date: toISODate(start), title: '基础巩固阶段', type: 'milestone', importance: 'medium' },
+    { date: toISODate(addDays(start, Math.floor(totalDays / 3))), title: '强化训练阶段', type: 'milestone', importance: 'medium' },
+    { date: toISODate(addDays(start, Math.floor(totalDays * 2 / 3))), title: '冲刺复盘阶段', type: 'milestone', importance: 'high' },
+    { date: examDate, title: '考试日', type: 'exam', importance: 'high' }
+  ];
+
+  return events.filter((event, index, list) =>
+    list.findIndex(candidate => candidate.date === event.date && candidate.title === event.title) === index
+  );
+}
+
+function mapRiskType(type) {
+  const typeMap = {
+    time_pressure: 'time_pressure',
+    low_accuracy: 'low_performance',
+    falling_behind: 'behind_schedule',
+    resource_overload: 'conflict'
+  };
+
+  return typeMap[type] || type;
+}
+
 // ============================================================
 // 确定性调度 + 降级逻辑
 // ============================================================
@@ -611,16 +852,17 @@ function deterministicallyScheduleTasks(frameworkTasks, availability, subjects) 
   const dailyMinutes = availability.dailyHours * 60;
   const tasks = [];
   const sorted = [...frameworkTasks].sort((a, b) => b.priority - a.priority);
+  const subjectCount = Math.max(subjects.length, 1);
 
   const subjectHours = {};
   for (const ft of sorted) {
-    const sid = ft.subjectId || 'general';
+    const sid = resolveTaskSubjectId(ft, subjects);
     if (!subjectHours[sid]) subjectHours[sid] = 0;
     const remainingHours = ft.estimatedHours || 2;
-    const sessionsNeeded = Math.ceil(remainingHours / (dailyMinutes / 60 / subjects.length));
+    const sessionsNeeded = Math.ceil(remainingHours / (dailyMinutes / 60 / subjectCount));
 
     for (let s = 0; s < sessionsNeeded; s++) {
-      const dayOffset = Math.floor((Object.keys(subjectHours).reduce((a, b) => a + subjectHours[b], 0) + s * (dailyMinutes / 60 / subjects.length)) / availability.dailyHours);
+      const dayOffset = Math.floor((Object.keys(subjectHours).reduce((a, b) => a + subjectHours[b], 0) + s * (dailyMinutes / 60 / subjectCount)) / availability.dailyHours);
       const date = new Date();
       date.setDate(date.getDate() + Math.min(dayOffset, totalDays - 1));
 

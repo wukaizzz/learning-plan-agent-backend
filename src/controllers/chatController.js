@@ -5,6 +5,7 @@ export async function streamChat(req, res) {
     messages,
     agentConfig,
     studySpaceId,
+    studySpaceContext,
     spaceId: requestSpaceId,
     runId,
     messageId
@@ -36,6 +37,7 @@ export async function streamChat(req, res) {
       messages,
       agentConfig,
       studySpaceId,
+      studySpaceContext,
       requestSpaceId,
       onEvent
     });
