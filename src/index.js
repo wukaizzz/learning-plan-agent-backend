@@ -3,6 +3,7 @@ import cors from 'cors';
 import { config } from './config.js';
 import chatRouter from './routes/chat.js';
 import doubaoRouter from './routes/doubao.js';
+import mimoRouter from './routes/mimo.js';
 import toolRouter from './routes/tool.js';
 import workflowRouter from './routes/workflowRoutes.js';
 
@@ -15,6 +16,7 @@ app.use(express.json());
 // Routes
 app.use('/api/chat', chatRouter);
 app.use('/api/doubao', doubaoRouter);
+app.use('/api/mimo', mimoRouter);
 app.use('/api/tool', toolRouter);
 app.use('/api/workflows', workflowRouter);
 
@@ -26,6 +28,7 @@ app.get('/health', (req, res) => {
     services: {
       deepseek: !!config.deepseek.apiKey,
       doubao: !!config.ark.apiKey,
+      mimo: !!config.mimo.apiKey,
       langgraph: true
     },
     version: '1.1.0'

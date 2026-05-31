@@ -37,6 +37,11 @@ export const config = Object.freeze({
     baseUrl: optionalEnv('ARK_API_URL', 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'),
     model: optionalEnv('ARK_MODEL', 'doubao-seed-2-0-lite-260215'),
   },
+  mimo: {
+    apiKey: optionalEnv('MIMO_API_KEY'),
+    baseUrl: optionalEnv('MIMO_API_URL', 'https://token-plan-cn.xiaomimimo.com/v1'),
+    model: optionalEnv('MIMO_MODEL', 'mimo-v2.5-pro'),
+  },
 });
 
 export default config;
