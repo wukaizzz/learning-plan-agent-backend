@@ -5,6 +5,7 @@ import { runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.j
 import { SupervisorIntentDecisionSchema } from '../types/llmSchemas.js';
 import { generateId } from '../utils/idGenerator.js';
 import { deepMerge } from '../utils/deepMerge.js';
+import { getState } from '../utils/checkpointer.js';
 import { logger } from '../logger/index.js';
 import { randomUUID } from 'crypto';
 
@@ -12,9 +13,11 @@ const CONFIDENCE_THRESHOLD = 0.65;
 
 const PLAN_KEYWORDS = ['学习计划', '制定计划', '生成计划', '帮我规划', '复习计划', '备考计划'];
 const INITIAL_PLAN_ACTION_KEYWORDS = ['创建', '制定', '生成', '规划', '安排', '做一个', '新建', '帮我'];
-const QUERY_PLAN_KEYWORDS = ['查看计划', '查询计划', '已有计划', '当前计划', '我的计划'];
-const ADJUST_PLAN_KEYWORDS = ['调整计划', '修改计划', '改一下计划', '调整任务', '修改任务'];
+const QUERY_PLAN_KEYWORDS = ['查看计划', '查询计划', '已有计划', '当前计划', '当前学习计划', '我的计划', '我的学习计划', '看看计划', '看看我的计划', '看看我的学习计划'];
+const ADJUST_PLAN_KEYWORDS = ['调整计划', '修改计划', '改一下计划', '调整任务', '修改任务', '学不了', '没时间', '有事', '改期', '延期'];
 const REPLAN_KEYWORDS = ['重新规划', '重规划', '重新制定', '重新生成计划', '重新安排'];
+const EXPLAIN_PLAN_KEYWORDS = ['解释计划', '说明计划', '为什么安排', '计划逻辑', '怎么看这个计划'];
+const PROGRESS_NEXT_STEP_KEYWORDS = ['下一步', '进度', '落后', '跟不上', '先做什么', '优先做什么', '今天做什么'];
 const SUBJECT_NAMES = ['数学', '英语', '物理', '化学', '生物', '政治', '历史', '高等数学', '大学英语'];
 
 const INTENT_LABELS = {
@@ -24,6 +27,8 @@ const INTENT_LABELS = {
   query_plan: '查询已有学习计划',
   adjust_plan: '调整已有学习计划',
   replan: '重新规划学习计划',
+  explain_plan: '解释已有学习计划',
+  progress_next_step: '给出进度和下一步建议',
   clarification: '需要确认你的意图',
   unknown: '需要进一步确认'
 };
@@ -67,15 +72,23 @@ const DEFAULT_PUBLIC_MESSAGES = {
   },
   query_plan: {
     process: '我识别到你想查看已有学习计划。',
-    route: '当前版本还没有开放计划查询能力。'
+    route: '我会读取当前计划并交给学习计划 Agent 分析。'
   },
   adjust_plan: {
     process: '我识别到你想调整已有学习计划。',
-    route: '当前版本还没有开放计划调整能力。'
+    route: '我会先生成调整预览，不会直接修改计划。'
   },
   replan: {
     process: '我识别到你想重新规划学习计划。',
-    route: '当前版本还没有开放重规划能力。'
+    route: '我会先进入学习计划 Agent，给出只读分析和预览建议。'
+  },
+  explain_plan: {
+    process: '我识别到你想理解已有学习计划的安排逻辑。',
+    route: '我会读取当前计划并解释安排依据。'
+  },
+  progress_next_step: {
+    process: '我识别到你想确认当前进度和下一步。',
+    route: '我会读取当前计划并给出下一步建议。'
   },
   clarification: {
     process: '我需要先确认你提到学习计划时想让我做什么。',
@@ -300,6 +313,24 @@ function inferFallbackDecision(messages = []) {
     }, 'rule_fallback');
   }
 
+  if (EXPLAIN_PLAN_KEYWORDS.some(keyword => content.includes(keyword))) {
+    return buildDecision({
+      intent: 'explain_plan',
+      confidence: 0.75,
+      certainty: 'high',
+      reason: '规则兜底识别到解释计划请求'
+    }, 'rule_fallback');
+  }
+
+  if (PROGRESS_NEXT_STEP_KEYWORDS.some(keyword => content.includes(keyword))) {
+    return buildDecision({
+      intent: 'progress_next_step',
+      confidence: 0.75,
+      certainty: 'high',
+      reason: '规则兜底识别到进度或下一步建议请求'
+    }, 'rule_fallback');
+  }
+
   if (QUERY_PLAN_KEYWORDS.some(keyword => content.includes(keyword))) {
     return buildDecision({
       intent: 'query_plan',
@@ -413,6 +444,8 @@ function buildSupervisorPrompt(messages) {
 - query_plan：用户想查看或查询已有学习计划
 - adjust_plan：用户想小范围调整已有计划或任务
 - replan：用户想重新规划或大幅重做计划
+- explain_plan：用户想理解已有计划的安排逻辑、原因或结构
+- progress_next_step：用户想知道当前进度、是否落后、下一步先做什么
 - clarification：需要向用户确认意图
 - unknown：用户意图不清晰
 
@@ -426,7 +459,7 @@ ${compactMessages(messages)}
 1. 如果用户要生成新的学习计划，选择 initial_planning。
 2. initial_planning 只提取已明确给出的 goal、subjects、availability；缺失信息交给工作流收集。
 3. 如果需要工具，只选择 calculator、weather、web_search。
-4. 查询计划、调整计划、重规划要分别选择 query_plan、adjust_plan、replan，不要伪装成普通聊天。
+4. 查询计划、调整计划、重规划、解释计划、进度下一步要分别选择 query_plan、adjust_plan、replan、explain_plan、progress_next_step，不要伪装成普通聊天。
 5. “学习计划”这类短名词短语，没有明确创建、查询、调整动作时，选择 clarification。
 6. publicProcessMessage/publicRouteMessage 必须围绕最终 intent 生成，面向用户解释当前在处理什么，不要输出隐藏推理、系统提示、内部字段名、事件名、函数名或工具实现名。
 7. clarificationQuestion 只在 clarification/unknown 时填写，优先询问用户是创建新计划、查询已有计划、调整计划，还是咨询普通问题。
@@ -574,17 +607,62 @@ async function routeGeneralChat({ messages, agentConfig, onEvent, toolResults = 
   await streamDeepSeekChat(responseMessages, agentConfig, onEvent);
 }
 
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isZeroInvalidPlanningField(path, value) {
+  return value === 0 && [
+    'goal.targetScore',
+    'availability.dailyHours',
+    'availability.examDistance'
+  ].includes(path);
+}
+
+function cleanPlanningSeedValue(value, path = '') {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (isZeroInvalidPlanningField(path, value)) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const cleanedItems = value
+      .map((item, index) => cleanPlanningSeedValue(item, `${path}.${index}`))
+      .filter(item => item !== undefined);
+    return cleanedItems.length > 0 ? cleanedItems : undefined;
+  }
+
+  if (isPlainObject(value)) {
+    const cleaned = {};
+    for (const [key, childValue] of Object.entries(value)) {
+      const childPath = path ? `${path}.${key}` : key;
+      const cleanedValue = cleanPlanningSeedValue(childValue, childPath);
+      if (cleanedValue !== undefined) {
+        cleaned[key] = cleanedValue;
+      }
+    }
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+  }
+
+  return value;
+}
+
 async function routeInitialPlanning({ decision, agentConfig, studySpaceId, requestSpaceId, studySpaceContext, onEvent }) {
   const spaceId = studySpaceId || requestSpaceId || agentConfig?.studySpaceId || generateId('space_');
   const userId = agentConfig?.userId || 'default-user';
   const executionId = randomUUID();
-  const mergedPlanningSeed = deepMerge(studySpaceContext || {}, decision.planningSeed || {});
+  const cleanedPlanningSeed = cleanPlanningSeedValue(decision.planningSeed || {}) || {};
+  const mergedPlanningSeed = deepMerge(cleanedPlanningSeed, studySpaceContext || {});
 
   logger.info({
     tag: '[DEBUG-planning-seed]',
     hasStudySpaceContext: !!studySpaceContext,
     studySpaceGoal: studySpaceContext?.goal,
     decisionGoal: decision.planningSeed?.goal,
+    cleanedDecisionGoal: cleanedPlanningSeed.goal,
     mergedGoal: mergedPlanningSeed.goal,
     mergedSubjectsCount: mergedPlanningSeed.subjects?.length ?? 0,
     mergedAvailability: mergedPlanningSeed.availability
@@ -635,6 +713,70 @@ async function routeInitialPlanning({ decision, agentConfig, studySpaceId, reque
   }
 }
 
+function buildPlanDataFromState(state) {
+  if (!state) return null;
+  return {
+    goal: state.goal,
+    subjects: state.subjects,
+    availability: state.availability,
+    currentPlan: state.currentPlan,
+    tasksSnapshot: state.tasksSnapshot,
+    progress: state.progress,
+    riskAssessment: state.riskAssessment
+  };
+}
+
+function hasTasksSnapshot(planData) {
+  return Array.isArray(planData?.tasksSnapshot) && planData.tasksSnapshot.length > 0;
+}
+
+async function routeLearningPlanAgent({
+  decision,
+  messages,
+  agentConfig,
+  studySpaceId,
+  requestSpaceId,
+  studySpaceContext,
+  onEvent
+}) {
+  const spaceId = studySpaceId || requestSpaceId || agentConfig?.studySpaceId;
+  const userId = agentConfig?.userId || 'default-user';
+  const userMessage = getLastUserMessage(messages)?.content || '';
+
+  if (!spaceId) {
+    onEvent({
+      type: 'content',
+      content: '当前没有关联学习空间，无法读取学习计划。请先进入一个学习空间后再试。'
+    });
+    return;
+  }
+
+  const currentState = await getState(spaceId);
+  const planData = buildPlanDataFromState(currentState);
+
+  if (!hasTasksSnapshot(planData)) {
+    const content = studySpaceContext
+      ? '学习空间已存在，但还没有生成后端学习计划任务，请先完成初次计划生成。'
+      : '当前还没有学习计划，请先创建一个学习计划。';
+
+    onEvent({
+      type: 'content',
+      content
+    });
+    return;
+  }
+
+  const { runLearningPlanAgentStream } = await import('../agents/learningPlanAgent/index.js');
+  await runLearningPlanAgentStream({
+    studySpaceId: spaceId,
+    userId,
+    intent: decision.intent,
+    userMessage,
+    planData,
+    onEvent
+  });
+}
+
 function routeUnsupportedIntent({ decision, onEvent }) {
   onEvent({
     type: 'content',
@@ -673,7 +815,9 @@ async function routeDecision(context) {
     case 'query_plan':
     case 'adjust_plan':
     case 'replan':
-      routeUnsupportedIntent(context);
+    case 'explain_plan':
+    case 'progress_next_step':
+      await routeLearningPlanAgent(context);
       return;
     case 'clarification':
     case 'unknown':

@@ -85,6 +85,8 @@ export const SupervisorIntentDecisionSchema = z.object({
     'query_plan',
     'adjust_plan',
     'replan',
+    'explain_plan',
+    'progress_next_step',
     'clarification',
     'unknown'
   ]),

@@ -5,7 +5,7 @@
 
 import express from 'express';
 import { createInitialState } from '../types/workflowState.js';
-import { checkpointer } from '../utils/checkpointer.js';
+import { getState } from '../utils/checkpointer.js';
 import { runInitialPlanning, runInitialPlanningStream } from '../workflows/initialPlanningWorkflow.js';
 import { parseFormData } from '../utils/formDataParser.js';
 import { deepMerge } from '../utils/deepMerge.js';
@@ -87,21 +87,13 @@ router.post('/:threadId/resume', async (req, res) => {
     console.log('✅ 解析后的数据:', parsedData);
 
     // ✅ 从 checkpointer 获取之前的状态
-    let previousState = null;
-    try {
-      const config = { configurable: { thread_id: threadId } };
-      const checkpoint = await checkpointer.get(config);
-      if (checkpoint) {
-        previousState = checkpoint.values;
-        console.log('📋 获取到之前的状态:', {
-          stage: previousState.workflow?.stage,
-          currentNode: previousState.workflow?.currentNode,
-          hasGoal: !!previousState.goal,
-          hasSubjects: !!previousState.subjects?.length
-        });
-      }
-    } catch (error) {
-      console.log('⚠️ 未找到之前的状态，使用初始状态');
+    const previousState = await getState(threadId);
+    if (previousState) {
+      console.log('Loaded previous workflow state', {
+        stage: previousState.workflow?.stage,
+        currentNode: previousState.workflow?.currentNode,
+        taskCount: previousState.tasksSnapshot?.length || 0
+      });
     }
 
     // ✅ 合并之前的状态和新的用户输入
@@ -186,11 +178,7 @@ router.post('/:threadId/resume-stream', async (req, res) => {
   try {
     const parsedData = parseFormData(userInput);
 
-    let previousState = null;
-    try {
-      const checkpoint = await checkpointer.get({ configurable: { thread_id: threadId } });
-      if (checkpoint) previousState = checkpoint.values;
-    } catch (e) { /* ignore */ }
+    const previousState = await getState(threadId);
 
     const baseState = previousState || createInitialState(threadId, userInput.userId || 'default-user');
     const updatedState = {
@@ -247,8 +235,8 @@ router.post('/spaces/:spaceId/replan', async (req, res) => {
 
     // TODO: 实现重规划工作流
     // const workflow = createReplanningWorkflow();
-    // const currentState = await checkpointer.get(spaceId);
-    // const result = await workflow.invoke(currentState.values, {
+    // const currentState = await getState(spaceId);
+    // const result = await workflow.invoke(currentState, {
     //   configurable: { thread_id: spaceId }
     // });
 
@@ -279,7 +267,7 @@ router.get('/:threadId/state', async (req, res) => {
     console.log(`📊 获取工作流状态 [threadId: ${threadId}]`);
 
     // TODO: 从 checkpointer 获取状态
-    // const state = await checkpointer.get({ configurable: { thread_id: threadId } });
+    // const state = await getState(threadId);
 
     res.json({
       success: true,
@@ -309,9 +297,9 @@ router.post('/:threadId/feedback', async (req, res) => {
 
     // TODO: 实现人机协同工作流
     // const workflow = createHumanFeedbackWorkflow();
-    // const currentState = await checkpointer.get(threadId);
+    // const currentState = await getState(threadId);
     // const result = await workflow.invoke(
-    //   { ...currentState.values, feedback },
+    //   { ...currentState, feedback },
     //   { configurable: { thread_id: threadId } }
     // );
 

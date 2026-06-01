@@ -5,6 +5,22 @@
 
 import { MemorySaver } from '@langchain/langgraph';
 
+const WORKFLOW_STATE_KEYS = [
+  'studySpaceId',
+  'userId',
+  'goal',
+  'subjects',
+  'availability',
+  'currentPlan',
+  'tasksSnapshot',
+  'progress',
+  'riskAssessment',
+  'workflow',
+  'uiBlocks',
+  'interruption',
+  'metadata'
+];
+
 /**
  * 内存中的 Checkpointer（开发环境使用）
  * 生产环境建议使用 PostgresSaver 或 Redis
@@ -22,6 +38,34 @@ export const checkpointer = new MemorySaver();
  * );
  */
 
+function pickWorkflowState(values) {
+  if (!values || typeof values !== 'object') {
+    return null;
+  }
+
+  const state = {};
+  for (const key of WORKFLOW_STATE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      state[key] = values[key];
+    }
+  }
+
+  return Object.keys(state).length > 0 ? state : null;
+}
+
+export function extractCheckpointValues(checkpoint) {
+  if (!checkpoint) {
+    return null;
+  }
+
+  return pickWorkflowState(
+    checkpoint.values ||
+    checkpoint.channel_values ||
+    checkpoint.checkpoint?.channel_values ||
+    null
+  );
+}
+
 /**
  * 获取指定线程的当前状态
  * @param {string} threadId - 线程 ID（通常是学习空间 ID）
@@ -32,13 +76,15 @@ export async function getState(threadId) {
     const config = { configurable: { thread_id: threadId } };
     // ✅ 使用 MemorySaver 的 get 方法
     const checkpoint = await checkpointer.get(config);
+    const values = extractCheckpointValues(checkpoint);
 
-    if (checkpoint && checkpoint.values) {
+    if (values) {
       console.log(`✅ 获取到状态 [threadId: ${threadId}]`, {
-        stage: checkpoint.values.workflow?.stage,
-        currentNode: checkpoint.values.workflow?.currentNode
+        stage: values.workflow?.stage,
+        currentNode: values.workflow?.currentNode,
+        taskCount: values.tasksSnapshot?.length || 0
       });
-      return checkpoint.values;
+      return values;
     }
 
     console.log(`⚠️ 未找到状态 [threadId: ${threadId}]`);
@@ -101,6 +147,7 @@ export async function getHistory(threadId) {
 
 export default {
   checkpointer,
+  extractCheckpointValues,
   getState,
   saveState,
   clearState,
