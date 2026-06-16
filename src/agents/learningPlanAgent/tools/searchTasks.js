@@ -5,7 +5,7 @@ const SearchTasksSchema = z.object({
   dateFrom: z.string().optional().describe('Inclusive start date in YYYY-MM-DD format.'),
   dateTo: z.string().optional().describe('Inclusive end date in YYYY-MM-DD format.'),
   subjectId: z.string().optional().describe('Subject id or subject name.'),
-  status: z.enum(['pending', 'completed', 'in_progress', 'skipped', 'all']).optional(),
+  status: z.enum(['pending', 'completed', 'in_progress', 'skipped', 'failed', 'all']).optional(),
   limit: z.number().int().positive().max(100).optional()
 });
 
@@ -93,4 +93,3 @@ export function executeSearchTasks(args = {}, planData = {}) {
     tasks: tasks.slice(0, limit).map(task => normalizeTask(task, subjects))
   });
 }
-

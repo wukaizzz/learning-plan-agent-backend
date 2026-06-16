@@ -798,7 +798,7 @@ function routeClarification({ decision, onEvent }) {
 }
 
 async function routeDecision(context) {
-  const { decision, onEvent } = context;
+  const { decision, onEvent } = context;// TODO routeDecision
 
   switch (decision.intent) {
     case 'initial_planning':

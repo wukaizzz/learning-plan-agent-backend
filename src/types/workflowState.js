@@ -69,7 +69,7 @@
  * @property {number} estimatedMinutes - 预估分钟数
  * @property {string} scheduledDate - 计划日期
  * @property {number} priority - 优先级
- * @property {'pending' | 'in_progress' | 'completed' | 'skipped'} status - 状态
+ * @property {'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed'} status - 状态
  * @property {string[]} [dependencies] - 依赖的任务 ID
  */
 

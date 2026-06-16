@@ -15,6 +15,8 @@ import { createInitialState } from '../types/workflowState.js';
 import { streamReasoner, streamChat, structuredOutput, streamChatWithThinking } from '../services/llmService.js';
 import { RiskAssessmentSchema, TaskFrameworkSchema } from '../types/llmSchemas.js';
 import { logger } from '../logger/index.js';
+import { deterministicallyScheduleTasks } from '../services/studyScheduler.js';
+import { buildStudyTimeline } from '../services/studyTimelineBuilder.js';
 
 const StateAnnotation = Annotation.Root({
   studySpaceId: Annotation(),
@@ -401,7 +403,14 @@ ${subjects.map(s => `- ID: ${s.id}，名称：${s.name}，当前水平 ${s.curre
 2. 任务的优先级和预估时长
 3. 分阶段安排建议
 
-注意：只需输出任务框架（任务名称、类型、优先级、预估小时数），具体日期和时间由系统自动分配。任务 subjectId 必须使用上方科目列表里的 ID。`;
+硬性约束：
+1. 只输出任务框架，不输出具体日期或每日安排，具体日期和时间由系统自动分配
+2. 不要重复列出同一学习目标；同一 subjectId、type、相似 title 的任务应合并为一个任务
+3. 长任务用一个任务和 estimatedHours 表达总工作量，不要拆成多条相同标题任务
+4. estimatedHours 表示该任务总耗时，不是单日耗时
+5. 不要输出 study_timeline、startDate、endDate、events 或任何 UIBlock 数据，阶段时间线由系统根据最终排程自动生成
+
+注意：任务 subjectId 必须使用上方科目列表里的 ID。`;
 
     const { thinkingText, contentText } = await streamChatWithThinking(planPrompt, {
       onThinking: (token) => {
@@ -421,7 +430,9 @@ ${planSource}
   "tasks": [{ "subjectId": "必须是上方科目列表里的 ID", "subjectName": "科目名", "title": "任务标题", "type": "study" | "practice" | "review", "priority": 1-10, "estimatedHours": 数字, "description": "描述" }],
   "strategy": "整体策略文本",
   "totalEstimatedHours": 数字
-}`;
+}
+
+不要输出 scheduledDate、study_timeline、startDate、endDate、events 或任何 UIBlock 数据。不要为了填充时间重复输出相同或相似任务。`;
 
     const taskFramework = await structuredOutput(structuredPlanPrompt, TaskFrameworkSchema, {
       systemPrompt: '你是一位学习规划专家。请输出严格的 JSON 格式，不要添加任何额外文字。'
@@ -498,7 +509,7 @@ async function buildUIBlocks(state, config) {
   const displayDate = displayedTasks[0]?.scheduledDate || today;
   const daysRemaining = calculateDaysRemaining(examDate, availability);
   const currentScore = calculateWeightedCurrentScore(subjects);
-  const timelineEvents = buildTimelineEvents(tasksByDate, today, examDate);
+  const timeline = buildStudyTimeline(tasksSnapshot, today, examDate);
   const scheduleGroups = buildScheduleGroups(tasksByDate, subjects);
 
   const uiBlocks = [
@@ -544,9 +555,9 @@ async function buildUIBlocks(state, config) {
       title: '学习时间线',
       order: 3,
       props: {
-        startDate: today,
-        endDate: examDate,
-        events: timelineEvents
+        startDate: timeline.startDate,
+        endDate: timeline.endDate,
+        events: timeline.events
       }
     }
   ];
@@ -744,7 +755,7 @@ function mapPriority(priority) {
 }
 
 function mapTaskStatus(status) {
-  const validStatuses = new Set(['pending', 'in_progress', 'completed', 'skipped']);
+  const validStatuses = new Set(['pending', 'in_progress', 'completed', 'skipped', 'failed']);
   return validStatuses.has(status) ? status : 'pending';
 }
 
@@ -756,7 +767,9 @@ function mapTaskForDailyList(task, subjects) {
     duration: task.estimatedMinutes,
     priority: mapPriority(task.priority),
     status: mapTaskStatus(task.status),
-    estimatedTime: ''
+    estimatedTime: '',
+    scheduledDate: task.scheduledDate,
+    groupLabel: formatScheduleGroupLabel(task.scheduledDate)
   };
 }
 
@@ -799,39 +812,6 @@ function selectDisplayTasks(tasksSnapshot, today) {
   return firstTask ? sortedTasks.filter(task => task.scheduledDate === firstTask.scheduledDate).slice(0, 5) : [];
 }
 
-function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function buildTimelineEvents(tasksByDate, startDate, examDate) {
-  const taskDates = Object.keys(tasksByDate).sort();
-  const start = new Date(taskDates[0] || startDate);
-  const end = new Date(examDate);
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return taskDates.slice(0, 3).map((date, index) => ({
-      date,
-      title: ['基础巩固阶段', '强化训练阶段', '冲刺复盘阶段'][index] || '阶段任务',
-      type: 'milestone',
-      importance: index === 2 ? 'high' : 'medium'
-    }));
-  }
-
-  const totalDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
-  const events = [
-    { date: toISODate(start), title: '基础巩固阶段', type: 'milestone', importance: 'medium' },
-    { date: toISODate(addDays(start, Math.floor(totalDays / 3))), title: '强化训练阶段', type: 'milestone', importance: 'medium' },
-    { date: toISODate(addDays(start, Math.floor(totalDays * 2 / 3))), title: '冲刺复盘阶段', type: 'milestone', importance: 'high' },
-    { date: examDate, title: '考试日', type: 'exam', importance: 'high' }
-  ];
-
-  return events.filter((event, index, list) =>
-    list.findIndex(candidate => candidate.date === event.date && candidate.title === event.title) === index
-  );
-}
-
 function mapRiskType(type) {
   const typeMap = {
     time_pressure: 'time_pressure',
@@ -846,59 +826,6 @@ function mapRiskType(type) {
 // ============================================================
 // 确定性调度 + 降级逻辑
 // ============================================================
-
-function deterministicallyScheduleTasks(frameworkTasks, availability, subjects) {
-  const totalDays = availability.examDistance;
-  const dailyMinutes = availability.dailyHours * 60;
-  const tasks = [];
-  const sorted = [...frameworkTasks].sort((a, b) => b.priority - a.priority);
-  const subjectCount = Math.max(subjects.length, 1);
-
-  const subjectHours = {};
-  for (const ft of sorted) {
-    const sid = resolveTaskSubjectId(ft, subjects);
-    if (!subjectHours[sid]) subjectHours[sid] = 0;
-    const remainingHours = ft.estimatedHours || 2;
-    const sessionsNeeded = Math.ceil(remainingHours / (dailyMinutes / 60 / subjectCount));
-
-    for (let s = 0; s < sessionsNeeded; s++) {
-      const dayOffset = Math.floor((Object.keys(subjectHours).reduce((a, b) => a + subjectHours[b], 0) + s * (dailyMinutes / 60 / subjectCount)) / availability.dailyHours);
-      const date = new Date();
-      date.setDate(date.getDate() + Math.min(dayOffset, totalDays - 1));
-
-      tasks.push({
-        id: `task_${tasks.length + 1}_${sid}`,
-        subjectId: sid,
-        title: ft.title,
-        type: ft.type || 'study',
-        estimatedMinutes: Math.min(Math.round((remainingHours / sessionsNeeded) * 60), dailyMinutes),
-        scheduledDate: date.toISOString().split('T')[0],
-        priority: ft.priority,
-        status: 'pending',
-      });
-
-      subjectHours[sid] += remainingHours / sessionsNeeded;
-    }
-  }
-
-  const reviewDays = Math.max(3, Math.floor(totalDays * 0.1));
-  for (let i = 0; i < reviewDays; i++) {
-    const reviewDate = new Date();
-    reviewDate.setDate(reviewDate.getDate() + totalDays - reviewDays + i);
-    tasks.push({
-      id: `review_${i + 1}`,
-      subjectId: 'all',
-      title: `综合复习 - 第${i + 1}轮`,
-      type: 'review',
-      estimatedMinutes: Math.min(Math.floor(dailyMinutes * 0.5), 90),
-      scheduledDate: reviewDate.toISOString().split('T')[0],
-      priority: 7,
-      status: 'pending',
-    });
-  }
-
-  return tasks;
-}
 
 function buildFallbackRiskAssessment(goal, subjects, availability) {
   const risks = [];
@@ -932,48 +859,34 @@ function buildFallbackRiskAssessment(goal, subjects, availability) {
 }
 
 function generateFallbackTasks(subjects, availability) {
-  const tasks = [];
-  let taskId = 1;
-  const totalDays = availability.examDistance;
-  const dailyHours = availability.dailyHours;
+  const frameworkTasks = subjects.flatMap(subject => {
+    const gap = Math.max(1, (subject.targetLevel || 5) - (subject.currentLevel || 1));
+    const basePriority = subject.priority === 'high' ? 8 : subject.priority === 'medium' ? 6 : 5;
+    const estimatedHours = Math.max(1, gap * 1.5);
 
-  for (const subject of subjects) {
-    const subjectTasks = Math.ceil((subject.targetLevel - subject.currentLevel) * 3);
-    for (let day = 0; day < totalDays; day++) {
-      const date = new Date();
-      date.setDate(date.getDate() + day);
-      if (day % Math.ceil(totalDays / subjectTasks) === 0 && taskId <= subjectTasks) {
-        tasks.push({
-          id: `task_${taskId++}_${subject.id}`,
-          subjectId: subject.id,
-          title: `${subject.name} - 第${Math.floor(taskId / Math.ceil(totalDays / subjectTasks)) + 1}阶段学习`,
-          type: 'study',
-          estimatedMinutes: Math.floor(dailyHours * 60 / subjects.length),
-          scheduledDate: date.toISOString().split('T')[0],
-          priority: subject.priority === 'high' ? 8 : 5,
-          status: 'pending'
-        });
+    return [
+      {
+        subjectId: subject.id,
+        subjectName: subject.name,
+        title: `${subject.name} - 核心概念梳理`,
+        type: 'study',
+        priority: basePriority,
+        estimatedHours,
+        description: '梳理核心概念、公式和基础知识框架'
+      },
+      {
+        subjectId: subject.id,
+        subjectName: subject.name,
+        title: `${subject.name} - 重点题型训练`,
+        type: 'practice',
+        priority: Math.min(10, basePriority + 1),
+        estimatedHours,
+        description: '围绕重点题型进行练习和订正'
       }
-    }
-  }
+    ];
+  });
 
-  const reviewDays = Math.max(3, Math.floor(totalDays * 0.1));
-  for (let i = 0; i < reviewDays; i++) {
-    const reviewDate = new Date();
-    reviewDate.setDate(reviewDate.getDate() + totalDays - reviewDays + i);
-    tasks.push({
-      id: `review_${i + 1}`,
-      subjectId: 'all',
-      title: `综合复习 - 第${i + 1}轮`,
-      type: 'review',
-      estimatedMinutes: Math.floor(dailyHours * 30),
-      scheduledDate: reviewDate.toISOString().split('T')[0],
-      priority: 7,
-      status: 'pending'
-    });
-  }
-
-  return tasks;
+  return deterministicallyScheduleTasks(frameworkTasks, availability, subjects);
 }
 
 // ============================================================
