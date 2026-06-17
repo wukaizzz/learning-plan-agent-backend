@@ -23,9 +23,43 @@ function optionalEnv(key, defaultValue = '') {
   return process.env[key] || defaultValue;
 }
 
+function optionalIntEnv(key, defaultValue) {
+  const value = process.env[key];
+  if (!value) {
+    return defaultValue;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid integer environment variable: ${key}.`);
+  }
+
+  return parsed;
+}
+
+function optionalBoolEnv(key, defaultValue = false) {
+  const value = process.env[key];
+  if (!value) {
+    return defaultValue;
+  }
+
+  return value === 'true' || value === '1';
+}
+
+const databaseUrl = optionalEnv('DATABASE_URL');
+
 export const config = Object.freeze({
   server: {
     port: optionalEnv('PORT', '3001'),
+  },
+  database: {
+    enabled: !!databaseUrl,
+    url: databaseUrl,
+    ssl: optionalBoolEnv('DATABASE_SSL', false),
+    sslRejectUnauthorized: optionalBoolEnv('DATABASE_SSL_REJECT_UNAUTHORIZED', true),
+    poolMax: optionalIntEnv('DATABASE_POOL_MAX', 10),
+    idleTimeoutMillis: optionalIntEnv('DATABASE_IDLE_TIMEOUT_MS', 30000),
+    connectionTimeoutMillis: optionalIntEnv('DATABASE_CONNECTION_TIMEOUT_MS', 5000),
   },
   deepseek: {
     apiKey: requireEnv('DEEPSEEK_API_KEY'),

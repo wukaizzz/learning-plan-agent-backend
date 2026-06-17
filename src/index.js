@@ -6,6 +6,7 @@ import doubaoRouter from './routes/doubao.js';
 import mimoRouter from './routes/mimo.js';
 import toolRouter from './routes/tool.js';
 import workflowRouter from './routes/workflowRoutes.js';
+import { checkDatabaseConnection } from './db/pool.js';
 
 const app = express();
 
@@ -29,10 +30,33 @@ app.get('/health', (req, res) => {
       deepseek: !!config.deepseek.apiKey,
       doubao: !!config.ark.apiKey,
       mimo: !!config.mimo.apiKey,
-      langgraph: true
+      langgraph: true,
+      database: config.database.enabled
     },
     version: '1.1.0'
   });
+});
+
+app.get('/health/db', async (req, res) => {
+  if (!config.database.enabled) {
+    return res.status(503).json({
+      status: 'not_configured',
+      message: 'Set DATABASE_URL in .env to enable PostgreSQL.'
+    });
+  }
+
+  try {
+    const database = await checkDatabaseConnection();
+    res.json({
+      status: 'ok',
+      database
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'error',
+      error: error.message
+    });
+  }
 });
 
 // Error handling
