@@ -6,6 +6,8 @@ import doubaoRouter from './routes/doubao.js';
 import mimoRouter from './routes/mimo.js';
 import toolRouter from './routes/tool.js';
 import workflowRouter from './routes/workflowRoutes.js';
+import planPersistenceRouter from './routes/planPersistenceRoutes.js';
+import spaceChatPersistenceRouter from './routes/spaceChatPersistenceRoutes.js';
 import { checkDatabaseConnection } from './db/pool.js';
 
 const app = express();
@@ -20,6 +22,8 @@ app.use('/api/doubao', doubaoRouter);
 app.use('/api/mimo', mimoRouter);
 app.use('/api/tool', toolRouter);
 app.use('/api/workflows', workflowRouter);
+app.use('/api', planPersistenceRouter);
+app.use('/api', spaceChatPersistenceRouter);
 
 // Health check
 app.get('/health', (req, res) => {

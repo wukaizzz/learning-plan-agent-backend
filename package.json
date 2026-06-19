@@ -8,6 +8,11 @@
     "dev": "cross-env NODE_ENV=development nodemon --exec \"node --import dotenv/config\" src/index.js",
     "start": "cross-env NODE_ENV=production node --import dotenv/config src/index.js",
     "dev:watch": "cross-env NODE_ENV=development node --watch --import dotenv/config src/index.js",
+    "db:health": "node --import dotenv/config scripts/db/health-check.js",
+    "db:migrate": "node --import dotenv/config scripts/db/migrate.js",
+    "db:seed": "node --import dotenv/config scripts/db/seed-dev.js",
+    "test:persistence": "node --import dotenv/config scripts/api-test/plan-persistence-smoke.js",
+    "test:persistence:space-chat": "node --import dotenv/config scripts/api-test/space-chat-persistence-smoke.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "commit": "git-cz"
   },

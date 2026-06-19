@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS public.study_plans CASCADE;
+DROP TABLE IF EXISTS public.threads CASCADE;
+DROP TABLE IF EXISTS public.users CASCADE;

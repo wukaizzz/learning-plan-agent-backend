@@ -57,9 +57,12 @@ export const config = Object.freeze({
     url: databaseUrl,
     ssl: optionalBoolEnv('DATABASE_SSL', false),
     sslRejectUnauthorized: optionalBoolEnv('DATABASE_SSL_REJECT_UNAUTHORIZED', true),
-    poolMax: optionalIntEnv('DATABASE_POOL_MAX', 10),
+    poolMax: optionalIntEnv('DATABASE_POOL_MAX', 3),
     idleTimeoutMillis: optionalIntEnv('DATABASE_IDLE_TIMEOUT_MS', 30000),
     connectionTimeoutMillis: optionalIntEnv('DATABASE_CONNECTION_TIMEOUT_MS', 5000),
+  },
+  app: {
+    defaultDevUserId: optionalEnv('DEFAULT_DEV_USER_ID', 'default-user'),
   },
   deepseek: {
     apiKey: requireEnv('DEEPSEEK_API_KEY'),
