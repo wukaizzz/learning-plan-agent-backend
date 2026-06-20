@@ -140,7 +140,16 @@ export async function saveSpace(userId, spaceId, payload) {
   if (space.id !== requireString(spaceId, 'spaceId')) {
     throw new PersistenceError('space.id must match route spaceId', 'VALIDATION_ERROR');
   }
-  return repository.upsertSpace(userId, space);
+  const result = await repository.upsertSpace(userId, space);
+  if (result.action === 'skipped') {
+    throw new PersistenceError(
+      'Remote study space is newer',
+      'STALE_WRITE_CONFLICT',
+      409,
+      { current: result.data }
+    );
+  }
+  return result.data;
 }
 
 export async function softDeleteSpace(userId, spaceId) {
@@ -191,7 +200,27 @@ export async function saveSession(userId, sessionId, payload) {
   if (snapshot.session.id !== requireString(sessionId, 'sessionId')) {
     throw new PersistenceError('session.id must match route sessionId', 'VALIDATION_ERROR');
   }
-  return repository.saveSession(userId, snapshot);
+  try {
+    const result = await repository.saveSession(userId, snapshot);
+    if (result.action === 'skipped') {
+      throw new PersistenceError(
+        'Remote chat session is newer',
+        'STALE_WRITE_CONFLICT',
+        409,
+        { current: result.data }
+      );
+    }
+    return result.data;
+  } catch (error) {
+    if (error?.code === '23503') {
+      throw new PersistenceError(
+        'Study space must be synchronized before its chat session',
+        'SPACE_DEPENDENCY_NOT_READY',
+        409
+      );
+    }
+    throw error;
+  }
 }
 
 export async function deleteSession(userId, sessionId) {

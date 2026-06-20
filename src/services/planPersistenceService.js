@@ -10,11 +10,12 @@ const TASK_STATUSES = new Set(['pending', 'in_progress', 'completed', 'skipped',
 const EXECUTION_STATUSES = new Set(['running', 'completed', 'failed', 'cancelled']);
 
 export class PersistenceError extends Error {
-  constructor(message, code = 'BAD_REQUEST', status = 400) {
+  constructor(message, code = 'BAD_REQUEST', status = 400, details = undefined) {
     super(message);
     this.name = 'PersistenceError';
     this.code = code;
     this.status = status;
+    this.details = details;
   }
 }
 

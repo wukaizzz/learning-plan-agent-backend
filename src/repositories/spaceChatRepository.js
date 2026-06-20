@@ -149,8 +149,7 @@ export async function upsertSpaceWithExecutor(executor, userId, space) {
 }
 
 export async function upsertSpace(userId, space) {
-  const result = await upsertSpaceWithExecutor({ query }, userId, space);
-  return result.data;
+  return upsertSpaceWithExecutor({ query }, userId, space);
 }
 
 export async function listSpaces(userId, includeDeleted) {
@@ -315,7 +314,7 @@ export async function saveSession(userId, snapshot) {
     await client.query('BEGIN');
     const result = await saveSessionWithExecutor(client, userId, snapshot);
     await client.query('COMMIT');
-    return result.data;
+    return result;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

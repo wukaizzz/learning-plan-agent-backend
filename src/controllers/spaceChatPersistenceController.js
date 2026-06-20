@@ -6,14 +6,24 @@ function success(res, data, status = 200) {
 }
 
 function failure(res, error) {
-  const known = error instanceof PersistenceError;
+  const normalizedError = !(error instanceof PersistenceError) && error?.code === '23503'
+    ? new PersistenceError(
+        'Study space must be synchronized before its related data',
+        'SPACE_DEPENDENCY_NOT_READY',
+        409
+      )
+    : error;
+  const known = normalizedError instanceof PersistenceError;
   if (!known) console.error(error);
-  return res.status(known ? error.status : 500).json({
+  return res.status(known ? normalizedError.status : 500).json({
     success: false,
     data: null,
     error: {
-      message: error.message || 'Internal server error',
-      code: known ? error.code : 'INTERNAL_SERVER_ERROR',
+      message: normalizedError.message || 'Internal server error',
+      code: known ? normalizedError.code : 'INTERNAL_SERVER_ERROR',
+      ...(known && normalizedError.details !== undefined
+        ? { details: normalizedError.details }
+        : {}),
     },
   });
 }

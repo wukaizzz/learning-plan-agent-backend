@@ -7,6 +7,7 @@ const suffix = Date.now();
 const spaceId = `space_codex_space_chat_${suffix}`;
 const sessionId = `session_codex_space_chat_${suffix}`;
 const globalSessionId = `session_codex_global_${suffix}`;
+const dependencySessionId = `session_codex_dependency_${suffix}`;
 const messageId = `msg-codex-space-chat-${suffix}`;
 const planId = `plan_codex_space_chat_${suffix}`;
 const executionId = `execution_codex_space_chat_${suffix}`;
@@ -136,6 +137,37 @@ async function run() {
   assert(savedSpace.body.success, 'Study space save failed');
   assert(savedSpace.body.data.userId === userId, 'Study space user ownership is wrong');
 
+  const newerSpacePayload = spacePayload(savedSpace.body.data.updatedAt + 1000);
+  newerSpacePayload.name = 'Newer remote space value';
+  const newerSpace = await request(`/api/study-spaces/${spaceId}`, {
+    method: 'PUT',
+    body: JSON.stringify(newerSpacePayload),
+  });
+  assert(newerSpace.body.success, 'Newer study space save failed');
+
+  const staleSpacePayload = spacePayload(savedSpace.body.data.updatedAt);
+  staleSpacePayload.name = 'Stale local space value';
+  const staleSpace = await request(`/api/study-spaces/${spaceId}`, {
+    method: 'PUT',
+    body: JSON.stringify(staleSpacePayload),
+  });
+  assert(staleSpace.response.status === 409, 'Stale study space did not return 409');
+  assert(
+    staleSpace.body.error?.code === 'STALE_WRITE_CONFLICT',
+    'Stale study space returned the wrong error code'
+  );
+  assert(
+    staleSpace.body.error?.details?.current?.name === 'Newer remote space value',
+    'Stale study space response did not include the remote snapshot'
+  );
+  const isolatedSpaces = await request('/api/study-spaces?includeDeleted=true', {
+    headers: { 'x-user-id': `isolated-user-${suffix}` },
+  });
+  assert(
+    isolatedSpaces.body.success && isolatedSpaces.body.data.length === 0,
+    'Study spaces leaked across user ownership'
+  );
+
   const savedSession = await request(`/api/chat-sessions/${sessionId}`, {
     method: 'PUT',
     body: JSON.stringify(sessionPayload(sessionId, spaceId)),
@@ -147,6 +179,54 @@ async function run() {
     'Runtime thinking content leaked into persistence'
   );
 
+  const newerSessionPayload = sessionPayload(
+    sessionId,
+    spaceId,
+    savedSession.body.data.updatedAt + 1000
+  );
+  newerSessionPayload.session.title = 'Newer remote session value';
+  const newerSession = await request(`/api/chat-sessions/${sessionId}`, {
+    method: 'PUT',
+    body: JSON.stringify(newerSessionPayload),
+  });
+  assert(newerSession.body.success, 'Newer chat session save failed');
+
+  const staleSessionPayload = sessionPayload(
+    sessionId,
+    spaceId,
+    savedSession.body.data.updatedAt
+  );
+  staleSessionPayload.session.title = 'Stale local session value';
+  const staleSession = await request(`/api/chat-sessions/${sessionId}`, {
+    method: 'PUT',
+    body: JSON.stringify(staleSessionPayload),
+  });
+  assert(staleSession.response.status === 409, 'Stale chat session did not return 409');
+  assert(
+    staleSession.body.error?.code === 'STALE_WRITE_CONFLICT',
+    'Stale chat session returned the wrong error code'
+  );
+  assert(
+    staleSession.body.error?.details?.current?.title === 'Newer remote session value',
+    'Stale chat session response did not include the remote snapshot'
+  );
+
+  const dependencySession = await request(`/api/chat-sessions/${dependencySessionId}`, {
+    method: 'PUT',
+    body: JSON.stringify(sessionPayload(
+      dependencySessionId,
+      `space_missing_${suffix}`
+    )),
+  });
+  assert(
+    dependencySession.response.status === 409,
+    'Missing parent space did not return 409'
+  );
+  assert(
+    dependencySession.body.error?.code === 'SPACE_DEPENDENCY_NOT_READY',
+    'Missing parent space returned the wrong error code'
+  );
+
   const globalSession = await request(`/api/chat-sessions/${globalSessionId}`, {
     method: 'PUT',
     body: JSON.stringify(sessionPayload(globalSessionId, null)),
@@ -154,7 +234,7 @@ async function run() {
   assert(globalSession.body.success, 'Global chat session save failed');
   assert(globalSession.body.data.spaceId === null, 'Global session spaceId is not null');
 
-  const olderSpace = spacePayload(savedSpace.body.data.updatedAt - 1000);
+  const olderSpace = spacePayload(newerSpace.body.data.updatedAt - 1000);
   olderSpace.name = 'Older local value';
   const importResult = await request('/api/persistence/import-local-v1', {
     method: 'POST',
@@ -163,7 +243,7 @@ async function run() {
       chatSessions: [sessionPayload(
         sessionId,
         spaceId,
-        savedSession.body.data.updatedAt - 1000
+        newerSession.body.data.updatedAt - 1000
       )],
     }),
   });

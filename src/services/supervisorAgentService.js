@@ -160,7 +160,7 @@ function withPublicMessages(decision) {
 function getLastUserMessage(messages = []) {
   return [...messages].reverse().find(message => message.role === 'user') || null;
 }
-
+//获得前六个消息
 function compactMessages(messages = []) {
   return messages
     .slice(-6)

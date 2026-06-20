@@ -10,10 +10,19 @@ function sendSuccess(res, data, status = 200) {
 }
 
 function sendError(res, error) {
-  const status = error instanceof PersistenceError ? error.status : 500;
-  const code = error instanceof PersistenceError ? error.code : 'INTERNAL_SERVER_ERROR';
+  const dependencyError = !(error instanceof PersistenceError) && error?.code === '23503'
+    ? new PersistenceError(
+        'Study space must be synchronized before its plan data',
+        'SPACE_DEPENDENCY_NOT_READY',
+        409
+      )
+    : error;
+  const status = dependencyError instanceof PersistenceError ? dependencyError.status : 500;
+  const code = dependencyError instanceof PersistenceError
+    ? dependencyError.code
+    : 'INTERNAL_SERVER_ERROR';
 
-  if (!(error instanceof PersistenceError)) {
+  if (!(dependencyError instanceof PersistenceError)) {
     console.error(error);
   }
 
@@ -21,8 +30,11 @@ function sendError(res, error) {
     success: false,
     data: null,
     error: {
-      message: error.message || 'Internal server error',
+      message: dependencyError.message || 'Internal server error',
       code,
+      ...(dependencyError.details !== undefined
+        ? { details: dependencyError.details }
+        : {}),
     },
   });
 }
