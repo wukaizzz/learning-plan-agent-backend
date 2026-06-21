@@ -58,6 +58,8 @@ Desktop.ini
 coverage/
 .nyc_output/
 *.test.js
+!src/agents/learningPlanAgent/tools/getProgressSummary.test.js
+!src/services/supervisorAgentService.test.js
 
 # 其他缓存
 *.tsbuildinfo

@@ -17,10 +17,10 @@ const CONFIDENCE_THRESHOLD = 0.65;
 
 const PLAN_KEYWORDS = ['学习计划', '制定计划', '生成计划', '帮我规划', '复习计划', '备考计划'];
 const INITIAL_PLAN_ACTION_KEYWORDS = ['创建', '制定', '生成', '规划', '安排', '做一个', '新建', '帮我'];
-const QUERY_PLAN_KEYWORDS = ['查看计划', '查询计划', '已有计划', '当前计划', '当前学习计划', '我的计划', '我的学习计划', '看看计划', '看看我的计划', '看看我的学习计划'];
+const QUERY_PLAN_KEYWORDS = ['查看计划', '查看今天的计划', '查询计划', '已有计划', '当前计划', '当前学习计划', '我的计划', '我的学习计划', '看看计划', '看看我的计划', '看看我的学习计划'];
 const ADJUST_PLAN_KEYWORDS = ['调整计划', '修改计划', '改一下计划', '调整任务', '修改任务', '学不了', '没时间', '有事', '改期', '延期'];
 const REPLAN_KEYWORDS = ['重新规划', '重规划', '重新制定', '重新生成计划', '重新安排'];
-const EXPLAIN_PLAN_KEYWORDS = ['解释计划', '说明计划', '为什么安排', '计划逻辑', '怎么看这个计划'];
+const EXPLAIN_PLAN_KEYWORDS = ['解释计划', '说明计划', '为什么安排', '为什么今天安排', '计划逻辑', '怎么看这个计划'];
 const PROGRESS_NEXT_STEP_KEYWORDS = ['下一步', '进度', '落后', '跟不上', '先做什么', '优先做什么', '今天做什么'];
 const SUBJECT_NAMES = ['数学', '英语', '物理', '化学', '生物', '政治', '历史', '高等数学', '大学英语'];
 
@@ -295,7 +295,7 @@ function buildDecision(partialDecision, source) {
   };
 }
 
-function inferFallbackDecision(messages = []) {
+export function inferFallbackDecision(messages = []) {
   const lastUserMessage = getLastUserMessage(messages);
   const content = lastUserMessage?.content || '';
 
@@ -727,6 +727,47 @@ function hasTasksSnapshot(planData) {
   return Array.isArray(planData?.tasksSnapshot) && planData.tasksSnapshot.length > 0;
 }
 
+export async function loadLearningPlanData({
+  userId,
+  spaceId,
+  studySpaceContext,
+  loadPersistedPlan = loadWorkflowPlan,
+  loadCheckpoint = getState
+}) {
+  let persistedPlan = null;
+  try {
+    persistedPlan = await loadPersistedPlan(userId, spaceId);
+  } catch (error) {
+    logger.warn({
+      err: error.message,
+      userId,
+      spaceId
+    }, 'Persisted plan read failed, falling back to checkpoint');
+  }
+
+  let currentState = null;
+  try {
+    currentState = await loadCheckpoint(spaceId);
+  } catch (error) {
+    if (!persistedPlan) {
+      throw error;
+    }
+    logger.warn({
+      err: error.message,
+      userId,
+      spaceId
+    }, 'Checkpoint enrichment failed, using persisted plan without it');
+  }
+
+  return persistedPlan
+    ? buildPlanDataFromPersistence(
+        persistedPlan,
+        currentState,
+        studySpaceContext
+      )
+    : buildPlanDataFromState(currentState);
+}
+
 async function routeLearningPlanAgent({
   decision,
   messages,
@@ -748,19 +789,11 @@ async function routeLearningPlanAgent({
     return;
   }
 
-  const currentState = await getState(spaceId);
-  const persistedPlan = await loadWorkflowPlan(
+  const planData = await loadLearningPlanData({
     userId,
     spaceId,
-    currentState?.currentPlan?.planId
-  );
-  const planData = persistedPlan
-    ? buildPlanDataFromPersistence(
-        persistedPlan,
-        currentState,
-        studySpaceContext
-      )
-    : buildPlanDataFromState(currentState);
+    studySpaceContext
+  });
 
   if (!hasTasksSnapshot(planData)) {
     const content = studySpaceContext
