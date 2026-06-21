@@ -6,6 +6,10 @@ import { SupervisorIntentDecisionSchema } from '../types/llmSchemas.js';
 import { generateId } from '../utils/idGenerator.js';
 import { deepMerge } from '../utils/deepMerge.js';
 import { getState } from '../utils/checkpointer.js';
+import {
+  buildPlanDataFromPersistence,
+  loadWorkflowPlan,
+} from './workflowPlanPersistence.js';
 import { logger } from '../logger/index.js';
 import { randomUUID } from 'crypto';
 
@@ -745,7 +749,18 @@ async function routeLearningPlanAgent({
   }
 
   const currentState = await getState(spaceId);
-  const planData = buildPlanDataFromState(currentState);
+  const persistedPlan = await loadWorkflowPlan(
+    userId,
+    spaceId,
+    currentState?.currentPlan?.planId
+  );
+  const planData = persistedPlan
+    ? buildPlanDataFromPersistence(
+        persistedPlan,
+        currentState,
+        studySpaceContext
+      )
+    : buildPlanDataFromState(currentState);
 
   if (!hasTasksSnapshot(planData)) {
     const content = studySpaceContext

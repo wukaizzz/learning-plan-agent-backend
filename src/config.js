@@ -47,6 +47,16 @@ function optionalBoolEnv(key, defaultValue = false) {
 }
 
 const databaseUrl = optionalEnv('DATABASE_URL');
+const checkpointerBackend = optionalEnv('CHECKPOINTER_BACKEND', 'auto');
+
+if (!['auto', 'memory', 'postgres'].includes(checkpointerBackend)) {
+  throw new Error('CHECKPOINTER_BACKEND must be one of: auto, memory, postgres.');
+}
+
+const checkpointerSchema = optionalEnv('CHECKPOINTER_SCHEMA', 'langgraph');
+if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(checkpointerSchema)) {
+  throw new Error('CHECKPOINTER_SCHEMA must be a valid PostgreSQL identifier.');
+}
 
 export const config = Object.freeze({
   server: {
@@ -60,6 +70,10 @@ export const config = Object.freeze({
     poolMax: optionalIntEnv('DATABASE_POOL_MAX', 3),
     idleTimeoutMillis: optionalIntEnv('DATABASE_IDLE_TIMEOUT_MS', 30000),
     connectionTimeoutMillis: optionalIntEnv('DATABASE_CONNECTION_TIMEOUT_MS', 5000),
+  },
+  checkpointer: {
+    backend: checkpointerBackend,
+    schema: checkpointerSchema,
   },
   app: {
     defaultDevUserId: optionalEnv('DEFAULT_DEV_USER_ID', 'default-user'),

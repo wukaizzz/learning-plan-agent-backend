@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { config } from '../../src/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -162,47 +163,86 @@ async function getAppliedMigrations(client) {
   return new Set(result.rows.map(row => row.filename));
 }
 
+async function setupCheckpointer(pool) {
+  const saver = new PostgresSaver(pool, undefined, {
+    schema: config.checkpointer.schema,
+  });
+  await saver.setup();
+
+  const client = await pool.connect();
+  const schema = config.checkpointer.schema;
+  try {
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'study_agent_dev') THEN
+          GRANT USAGE ON SCHEMA "${schema}" TO study_agent_dev;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "${schema}" TO study_agent_dev;
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'study_agent_user') THEN
+          GRANT USAGE ON SCHEMA "${schema}" TO study_agent_user;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "${schema}" TO study_agent_user;
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'study_agent_readonly') THEN
+          GRANT USAGE ON SCHEMA "${schema}" TO study_agent_readonly;
+          GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO study_agent_readonly;
+        END IF;
+      END $$;
+    `);
+  } finally {
+    client.release();
+  }
+
+  console.log(`LangGraph checkpointer schema ready: ${schema}`);
+}
+
 async function main() {
   const pool = createMigrationPool();
-  const setupClient = await pool.connect();
-
   try {
-    await ensureMigrationsTable(setupClient);
-    const applied = await getAppliedMigrations(setupClient);
-    const files = (await fs.readdir(migrationsDir))
-      .filter(file => file.endsWith('.sql'))
-      .sort();
+    const setupClient = await pool.connect();
+    try {
+      await ensureMigrationsTable(setupClient);
+      const applied = await getAppliedMigrations(setupClient);
+      const files = (await fs.readdir(migrationsDir))
+        .filter(file => file.endsWith('.sql'))
+        .sort();
 
-    for (const file of files) {
-      if (applied.has(file)) {
-        console.log(`Skipping ${file}`);
-        continue;
+      for (const file of files) {
+        if (applied.has(file)) {
+          console.log(`Skipping ${file}`);
+          continue;
+        }
+
+        if (file === '001_drop_test_phase1_tables.sql') {
+          await assertLegacyDropIsSafe(setupClient);
+        }
+
+        const sql = await fs.readFile(path.join(migrationsDir, file), 'utf8');
+
+        try {
+          await setupClient.query('BEGIN');
+          await setupClient.query(sql);
+          await setupClient.query(
+            'INSERT INTO public.schema_migrations (filename) VALUES ($1)',
+            [file]
+          );
+          await setupClient.query('COMMIT');
+          console.log(`Applied ${file}`);
+        } catch (error) {
+          await setupClient.query('ROLLBACK');
+          throw error;
+        }
       }
 
-      if (file === '001_drop_test_phase1_tables.sql') {
-        await assertLegacyDropIsSafe(setupClient);
-      }
-
-      const sql = await fs.readFile(path.join(migrationsDir, file), 'utf8');
-
-      try {
-        await setupClient.query('BEGIN');
-        await setupClient.query(sql);
-        await setupClient.query(
-          'INSERT INTO public.schema_migrations (filename) VALUES ($1)',
-          [file]
-        );
-        await setupClient.query('COMMIT');
-        console.log(`Applied ${file}`);
-      } catch (error) {
-        await setupClient.query('ROLLBACK');
-        throw error;
-      }
+      console.log('Migrations complete');
+    } finally {
+      setupClient.release();
     }
 
-    console.log('Migrations complete');
+    await setupCheckpointer(pool);
   } finally {
-    setupClient.release();
     await pool.end();
   }
 }

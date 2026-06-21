@@ -14,6 +14,9 @@ importers:
       '@langchain/langgraph':
         specifier: ^1.3.0
         version: 1.3.0(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(openai@6.38.0(zod@4.4.3))(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      '@langchain/langgraph-checkpoint-postgres':
+        specifier: 1.0.1
+        version: 1.0.1(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(@langchain/langgraph-checkpoint@1.0.2(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3))))
       '@langchain/openai':
         specifier: ^1.4.6
         version: 1.4.6(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))
@@ -94,6 +97,13 @@ packages:
   '@langchain/core@1.1.47':
     resolution: {integrity: sha512-+fiPu6ZFnJMrZyKeM77OIVPoMPAY6OKWacnPlojHtXTbMMzb2cEOKAJV0U07cDl86NHSCIYYa0i4CyKZzXbHQQ==}
     engines: {node: '>=20'}
+
+  '@langchain/langgraph-checkpoint-postgres@1.0.1':
+    resolution: {integrity: sha512-cRXOLYZc0egMjyAQfBblWXdoBS+WKwEbCEuE+/f88XHJ1bq5jVz7aycbpjF/7F5EykG7xmybQOz5eUdg3neRzg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@langchain/core': ^1.0.1
+      '@langchain/langgraph-checkpoint': ^1.0.0
 
   '@langchain/langgraph-checkpoint@1.0.2':
     resolution: {integrity: sha512-F4E5Tr0nt8FGghgdscJtHw+ABzChOHeI80R7Y1pjIHdiJom6c2ieo76vL+FWiny80JmoGqhrVAEIWrw0cXKPxg==}
@@ -1381,6 +1391,14 @@ snapshots:
       - '@opentelemetry/sdk-trace-base'
       - openai
       - ws
+
+  '@langchain/langgraph-checkpoint-postgres@1.0.1(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))(@langchain/langgraph-checkpoint@1.0.2(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3))))':
+    dependencies:
+      '@langchain/core': 1.1.47(openai@6.38.0(zod@4.4.3))
+      '@langchain/langgraph-checkpoint': 1.0.2(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))
+      pg: 8.21.0
+    transitivePeerDependencies:
+      - pg-native
 
   '@langchain/langgraph-checkpoint@1.0.2(@langchain/core@1.1.47(openai@6.38.0(zod@4.4.3)))':
     dependencies:

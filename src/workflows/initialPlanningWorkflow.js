@@ -17,6 +17,11 @@ import { RiskAssessmentSchema, TaskFrameworkSchema } from '../types/llmSchemas.j
 import { logger } from '../logger/index.js';
 import { deterministicallyScheduleTasks } from '../services/studyScheduler.js';
 import { buildStudyTimeline } from '../services/studyTimelineBuilder.js';
+import {
+  buildFinalizedCheckpointUpdate,
+  hydrateFinalizedWorkflowState,
+  persistFinalizedWorkflowPlan,
+} from '../services/workflowPlanPersistence.js';
 
 const StateAnnotation = Annotation.Root({
   studySpaceId: Annotation(),
@@ -105,10 +110,7 @@ async function loadSpaceContext(state, config) {
       ...state.workflow,
       stage: 'collecting_info',
       currentNode: 'load_space_context',
-      history: [
-        ...state.workflow.history,
-        { node: 'load_space_context', timestamp: Date.now(), duration: 100 }
-      ]
+      history: [{ node: 'load_space_context', timestamp: Date.now(), duration: 100 }]
     },
     metadata: {
       ...state.metadata,
@@ -235,10 +237,7 @@ async function collectMissingInfo(state, config) {
       ...state.workflow,
       stage: 'analyzing',
       currentNode: 'collect_missing_info',
-      history: [
-        ...state.workflow.history,
-        { node: 'collect_missing_info', timestamp: Date.now(), duration: 50 }
-      ]
+      history: [{ node: 'collect_missing_info', timestamp: Date.now(), duration: 50 }]
     },
     metadata: {
       ...state.metadata,
@@ -364,10 +363,11 @@ ${analysisSource}
       ...state.workflow,
       stage: 'planning',
       currentNode: 'analyze_requirements',
-      history: [
-        ...state.workflow.history,
-        { node: 'analyze_requirements', timestamp: Date.now(), duration: Date.now() - (state.metadata?.updatedAt || Date.now()) }
-      ]
+      history: [{
+        node: 'analyze_requirements',
+        timestamp: Date.now(),
+        duration: Date.now() - (state.metadata?.updatedAt || Date.now())
+      }]
     },
     metadata: {
       ...state.metadata,
@@ -479,6 +479,9 @@ ${planSource}
 
   onEvent({ type: 'workflow_step', step: 'generating', progress: 90 });
 
+  const planTimestamp = Date.now();
+  const planId = `plan_${state.studySpaceId}_${planTimestamp}`;
+
   return {
     tasksSnapshot: tasks,
     progress: {
@@ -487,18 +490,21 @@ ${planSource}
       overallCompletionRate: 0
     },
     currentPlan: {
-      versionId: `v1_${Date.now()}`,
+      planId,
+      versionId: planId,
       versionNumber: 1,
-      createdAt: new Date().toISOString(),
-      lastModifiedAt: new Date().toISOString()
+      status: 'draft',
+      createdAt: new Date(planTimestamp).toISOString(),
+      lastModifiedAt: new Date(planTimestamp).toISOString()
     },
     workflow: {
       ...state.workflow,
       currentNode: 'generate_plan',
-      history: [
-        ...state.workflow.history,
-        { node: 'generate_plan', timestamp: Date.now(), duration: Date.now() - (state.metadata?.updatedAt || Date.now()) }
-      ]
+      history: [{
+        node: 'generate_plan',
+        timestamp: Date.now(),
+        duration: Date.now() - (state.metadata?.updatedAt || Date.now())
+      }]
     },
     metadata: {
       ...state.metadata,
@@ -513,6 +519,14 @@ async function buildUIBlocks(state, config) {
   emitAgentStep(config, { stepId: 'build_ui_blocks', status: 'running', title: '构建计划展示' });
 
   const { goal, subjects, tasksSnapshot, availability, riskAssessment } = state;
+  const planId = state.currentPlan?.planId;
+  const blockMeta = {
+    timestamp: Date.now(),
+    version: String(state.currentPlan?.versionNumber || 1),
+    planId,
+    planVersion: state.currentPlan?.versionNumber || 1,
+    persisted: false,
+  };
 
   const tasksByDate = {};
   for (const task of tasksSnapshot) {
@@ -533,10 +547,11 @@ async function buildUIBlocks(state, config) {
 
   const uiBlocks = [
     {
-      id: 'summary_card',
+      id: `${planId}:summary_card`,
       type: 'summary-card',
       title: '学习计划概览',
       order: 1,
+      meta: blockMeta,
       props: {
         spaceName: '学习计划',
         spaceDescription: goal.primaryGoal || '个性化学习计划',
@@ -554,10 +569,11 @@ async function buildUIBlocks(state, config) {
       }
     },
     {
-      id: 'daily_task_list',
+      id: `${planId}:daily_task_list`,
       type: 'daily-task-list',
       title: '今日任务',
       order: 2,
+      meta: blockMeta,
       props: {
         date: displayDate,
         tasks: displayedTasks.map(t => mapTaskForDailyList(t, subjects)),
@@ -569,10 +585,11 @@ async function buildUIBlocks(state, config) {
       }
     },
     {
-      id: 'study_timeline',
+      id: `${planId}:study_timeline`,
       type: 'study-timeline',
       title: '学习时间线',
       order: 3,
+      meta: blockMeta,
       props: {
         startDate: timeline.startDate,
         endDate: timeline.endDate,
@@ -583,10 +600,11 @@ async function buildUIBlocks(state, config) {
 
   if (riskAssessment && riskAssessment.level !== 'low' && riskAssessment.factors?.length > 0) {
     uiBlocks.push({
-      id: 'risk_alert',
+      id: `${planId}:risk_alert`,
       type: 'risk-alert',
       title: '风险提示',
       order: 4,
+      meta: blockMeta,
       props: {
         risks: riskAssessment.factors.map(f => ({
           type: mapRiskType(f.type),
@@ -601,48 +619,46 @@ async function buildUIBlocks(state, config) {
   const actionBarActions = [];
   if (actionBarActions.length > 0) {
     uiBlocks.push({
-      id: 'action_bar',
+      id: `${planId}:action_bar`,
       type: 'action-bar',
       title: '操作选项',
       order: 99,
+      meta: blockMeta,
       props: {
         actions: actionBarActions
       }
     });
   }
 
-  for (const block of uiBlocks) {
+  const persistence = await persistFinalizedWorkflowPlan(state, uiBlocks);
+  const emittedBlocks = uiBlocks.map(block => ({
+    ...block,
+    meta: {
+      ...block.meta,
+      persisted: persistence.persisted,
+    },
+  }));
+
+  for (const block of emittedBlocks) {
     onEvent({ type: 'ui_block_update', action: 'add', block });
   }
 
   emitAgentStep(config, {
     stepId: 'build_ui_blocks',
     status: 'completed',
-    summary: `已生成 ${uiBlocks.length} 个展示组件：${uiBlocks.map(b => b.title).join('、')}`
+    summary: `已生成 ${emittedBlocks.length} 个展示组件：${emittedBlocks.map(b => b.title).join('、')}`
   });
 
   onEvent({ type: 'workflow_step', step: 'finalized', progress: 100 });
   onEvent({ type: 'content', content: '学习计划已生成，右侧已整理为概览、任务和时间线。' });
 
-  logger.info({ step: 'build_ui_blocks', blockCount: uiBlocks.length }, 'UI blocks generated');
+  logger.info({
+    step: 'build_ui_blocks',
+    blockCount: emittedBlocks.length,
+    persisted: persistence.persisted,
+  }, 'UI blocks generated');
 
-  return {
-    uiBlocks,
-    workflow: {
-      ...state.workflow,
-      stage: 'finalized',
-      currentNode: 'build_ui_blocks',
-      history: [
-        ...state.workflow.history,
-        { node: 'build_ui_blocks', timestamp: Date.now(), duration: 200 }
-      ]
-    },
-    metadata: {
-      ...state.metadata,
-      updatedAt: Date.now(),
-      lastActivityAt: Date.now()
-    }
-  };
+  return buildFinalizedCheckpointUpdate(state, emittedBlocks, persistence);
 }
 
 function toISODate(date) {
@@ -995,7 +1011,7 @@ export async function runInitialPlanning(studySpaceId, userId, initialState = {}
   });
 
   logger.info({ stage: result.workflow.stage }, 'Workflow completed');
-  return result;
+  return hydrateFinalizedWorkflowState(result);
 }
 
 export default {

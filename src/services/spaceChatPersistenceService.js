@@ -1,4 +1,5 @@
 import * as repository from '../repositories/spaceChatRepository.js';
+import { clearState } from '../utils/checkpointer.js';
 import { PersistenceError } from './planPersistenceService.js';
 
 const SPACE_STATUSES = new Set(['planning', 'active', 'paused', 'completed']);
@@ -177,7 +178,10 @@ export async function restoreSpace(userId, spaceId) {
 }
 
 export async function permanentlyDeleteSpace(userId, spaceId) {
-  return repository.permanentlyDeleteSpace(userId, requireString(spaceId, 'spaceId'));
+  const normalizedSpaceId = requireString(spaceId, 'spaceId');
+  const result = await repository.permanentlyDeleteSpace(userId, normalizedSpaceId);
+  await clearState(normalizedSpaceId);
+  return result;
 }
 
 export async function listSessions(userId, query) {

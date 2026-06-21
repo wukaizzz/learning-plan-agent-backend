@@ -9,6 +9,10 @@ import workflowRouter from './routes/workflowRoutes.js';
 import planPersistenceRouter from './routes/planPersistenceRoutes.js';
 import spaceChatPersistenceRouter from './routes/spaceChatPersistenceRoutes.js';
 import { checkDatabaseConnection } from './db/pool.js';
+import {
+  getCheckpointerStatus,
+  initializeCheckpointer,
+} from './utils/checkpointer.js';
 
 const app = express();
 
@@ -35,7 +39,8 @@ app.get('/health', (req, res) => {
       doubao: !!config.ark.apiKey,
       mimo: !!config.mimo.apiKey,
       langgraph: true,
-      database: config.database.enabled
+      database: config.database.enabled,
+      checkpointer: getCheckpointerStatus(),
     },
     version: '1.1.0'
   });
@@ -68,6 +73,8 @@ app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+await initializeCheckpointer();
 
 app.listen(config.server.port, () => {
   console.log(`Backend server running on port ${config.server.port}`);

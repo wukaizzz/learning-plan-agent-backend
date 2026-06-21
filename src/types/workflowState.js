@@ -54,8 +54,10 @@
 
 /**
  * @typedef {Object} CurrentPlan
+ * @property {string} planId - PostgreSQL business plan ID
  * @property {string} versionId - 版本 ID
  * @property {number} versionNumber - 版本号
+ * @property {'draft' | 'active' | 'paused' | 'completed' | 'archived'} [status] - 业务计划状态
  * @property {string} createdAt - 创建时间
  * @property {string} lastModifiedAt - 最后修改时间
  */
@@ -139,7 +141,7 @@
  * @property {ProgressInfo} progress - 执行进度
  * @property {RiskAssessment} riskAssessment - 风险评估
  * @property {WorkflowState} workflow - 工作流状态
- * @property {UIBlock[]} uiBlocks - UI 输出
+ * @property {UIBlock[]} uiBlocks - 暂停表单或未启用业务持久化时的 UI 输出；finalized UI 从业务表恢复
  * @property {InterruptionInfo|null} interruption - 中断状态
  * @property {Metadata} metadata - 元数据
  */

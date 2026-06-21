@@ -1,9 +1,7 @@
-/**
- * LangGraph Checkpointer 配置
- * 用于持久化工作流状态，支持中断/恢复机制
- */
-
 import { MemorySaver } from '@langchain/langgraph';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
+import { config } from '../config.js';
+import { getDatabasePool } from '../db/pool.js';
 
 const WORKFLOW_STATE_KEYS = [
   'studySpaceId',
@@ -18,25 +16,19 @@ const WORKFLOW_STATE_KEYS = [
   'workflow',
   'uiBlocks',
   'interruption',
-  'metadata'
+  'metadata',
 ];
 
-/**
- * 内存中的 Checkpointer（开发环境使用）
- * 生产环境建议使用 PostgresSaver 或 Redis
- */
-export const checkpointer = new MemorySaver();
+let initialized = false;
+let status = {
+  backend: 'memory',
+  ready: false,
+  fallback: false,
+  schema: null,
+  error: null,
+};
 
-/**
- * 创建带数据库的 Checkpointer（生产环境）
- * 需要安装: @langchain/langgraph-checkpoint-postgres
- *
- * @example
- * import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
- * export const checkpointer = await PostgresSaver.fromConnString(
- *   process.env.DATABASE_URL
- * );
- */
+export let checkpointer = new MemorySaver();
 
 function pickWorkflowState(values) {
   if (!values || typeof values !== 'object') {
@@ -53,6 +45,114 @@ function pickWorkflowState(values) {
   return Object.keys(state).length > 0 ? state : null;
 }
 
+function resolveBackend(backend) {
+  if (backend && backend !== 'auto') {
+    return backend;
+  }
+
+  if (process.env.NODE_ENV === 'test') {
+    return 'memory';
+  }
+
+  return config.database.enabled ? 'postgres' : 'memory';
+}
+
+async function assertPostgresCheckpointerReady(pool, schema) {
+  const result = await pool.query(
+    `SELECT
+       to_regclass($1) AS checkpoints,
+       to_regclass($2) AS checkpoint_blobs,
+       to_regclass($3) AS checkpoint_writes`,
+    [
+      `${schema}.checkpoints`,
+      `${schema}.checkpoint_blobs`,
+      `${schema}.checkpoint_writes`,
+    ]
+  );
+
+  const tables = result.rows[0];
+  if (!tables.checkpoints || !tables.checkpoint_blobs || !tables.checkpoint_writes) {
+    throw new Error(
+      `LangGraph checkpoint tables are missing in schema "${schema}". Run "pnpm db:migrate".`
+    );
+  }
+}
+
+export async function initializeCheckpointer(options = {}) {
+  if (initialized && !options.force) {
+    return getCheckpointerStatus();
+  }
+
+  const backend = resolveBackend(options.backend || config.checkpointer.backend);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowFallback = options.allowFallback ?? !isProduction;
+
+  if (backend === 'memory') {
+    if (isProduction) {
+      throw new Error('Production requires the PostgreSQL checkpointer.');
+    }
+
+    checkpointer = new MemorySaver();
+    initialized = true;
+    status = {
+      backend: 'memory',
+      ready: true,
+      fallback: !options.backend && !config.database.enabled,
+      schema: null,
+      error: null,
+    };
+
+    if (status.fallback) {
+      console.warn(
+        'PostgreSQL is not configured; using MemorySaver. Workflow state will be lost on restart.'
+      );
+    }
+    return getCheckpointerStatus();
+  }
+
+  if (backend !== 'postgres') {
+    throw new Error(`Unsupported checkpointer backend: ${backend}`);
+  }
+
+  try {
+    const pool = options.pool || getDatabasePool();
+    const schema = options.schema || config.checkpointer.schema;
+    await assertPostgresCheckpointerReady(pool, schema);
+    checkpointer = new PostgresSaver(pool, undefined, { schema });
+    initialized = true;
+    status = {
+      backend: 'postgres',
+      ready: true,
+      fallback: false,
+      schema,
+      error: null,
+    };
+    return getCheckpointerStatus();
+  } catch (error) {
+    if (!allowFallback) {
+      throw error;
+    }
+
+    checkpointer = new MemorySaver();
+    initialized = true;
+    status = {
+      backend: 'memory',
+      ready: true,
+      fallback: true,
+      schema: null,
+      error: error.message,
+    };
+    console.warn(
+      `PostgreSQL checkpointer unavailable; using MemorySaver for development: ${error.message}`
+    );
+    return getCheckpointerStatus();
+  }
+}
+
+export function getCheckpointerStatus() {
+  return { ...status };
+}
+
 export function extractCheckpointValues(checkpoint) {
   if (!checkpoint) {
     return null;
@@ -66,90 +166,75 @@ export function extractCheckpointValues(checkpoint) {
   );
 }
 
-/**
- * 获取指定线程的当前状态
- * @param {string} threadId - 线程 ID（通常是学习空间 ID）
- * @returns {Promise<StudySpaceWorkflowState|null>}
- */
 export async function getState(threadId) {
   try {
-    const config = { configurable: { thread_id: threadId } };
-    // ✅ 使用 MemorySaver 的 get 方法
-    const checkpoint = await checkpointer.get(config);
+    const checkpoint = await checkpointer.get({
+      configurable: { thread_id: threadId },
+    });
     const values = extractCheckpointValues(checkpoint);
 
     if (values) {
-      console.log(`✅ 获取到状态 [threadId: ${threadId}]`, {
+      console.log(`Loaded workflow state [threadId: ${threadId}]`, {
         stage: values.workflow?.stage,
         currentNode: values.workflow?.currentNode,
-        taskCount: values.tasksSnapshot?.length || 0
+        taskCount: values.tasksSnapshot?.length || 0,
       });
       return values;
     }
 
-    console.log(`⚠️ 未找到状态 [threadId: ${threadId}]`);
+    console.log(`Workflow state not found [threadId: ${threadId}]`);
     return null;
   } catch (error) {
-    console.error(`获取状态失败 [threadId: ${threadId}]:`, error);
+    console.error(`Failed to load workflow state [threadId: ${threadId}]:`, error);
     return null;
   }
 }
 
-/**
- * 保存工作流状态
- * @param {string} threadId - 线程 ID
- * @param {StudySpaceWorkflowState} state - 要保存的状态
- * @returns {Promise<void>}
- */
-export async function saveState(threadId, state) {
-  try {
-    const config = { configurable: { thread_id: threadId } };
-    // LangGraph checkpointer 会自动保存状态
-    // 这里只是示例，实际调用方式取决于具体实现
-    console.log(`状态已保存 [threadId: ${threadId}]`);
-  } catch (error) {
-    console.error(`保存状态失败 [threadId: ${threadId}]:`, error);
-    throw error;
-  }
-}
-
-/**
- * 清除指定线程的状态
- * @param {string} threadId - 线程 ID
- * @returns {Promise<void>}
- */
 export async function clearState(threadId) {
-  try {
-    const config = { configurable: { thread_id: threadId } };
-    // 实现清除逻辑
-    console.log(`状态已清除 [threadId: ${threadId}]`);
-  } catch (error) {
-    console.error(`清除状态失败 [threadId: ${threadId}]:`, error);
-    throw error;
+  if (typeof checkpointer.deleteThread !== 'function') {
+    throw new Error('The configured checkpointer does not support thread deletion.');
   }
+
+  await checkpointer.deleteThread(threadId);
+  console.log(`Workflow state cleared [threadId: ${threadId}]`);
 }
 
-/**
- * 获取线程的执行历史
- * @param {string} threadId - 线程 ID
- * @returns {Promise<WorkflowHistoryItem[]>}
- */
 export async function getHistory(threadId) {
-  try {
-    // 从 State 中的 workflow.history 获取
-    const state = await getState(threadId);
-    return state?.workflow?.history || [];
-  } catch (error) {
-    console.error(`获取历史失败 [threadId: ${threadId}]:`, error);
-    return [];
+  const items = [];
+  for await (const tuple of checkpointer.list(
+    { configurable: { thread_id: threadId } },
+    { limit: 50 }
+  )) {
+    const values = extractCheckpointValues(tuple.checkpoint);
+    if (values) {
+      items.push({
+        checkpointId: tuple.config?.configurable?.checkpoint_id,
+        stage: values.workflow?.stage,
+        currentNode: values.workflow?.currentNode,
+      });
+    }
   }
+  return items;
+}
+
+export function replaceCheckpointerForTests(nextCheckpointer, nextStatus = {}) {
+  checkpointer = nextCheckpointer;
+  initialized = true;
+  status = {
+    backend: 'memory',
+    ready: true,
+    fallback: false,
+    schema: null,
+    error: null,
+    ...nextStatus,
+  };
 }
 
 export default {
-  checkpointer,
+  initializeCheckpointer,
+  getCheckpointerStatus,
   extractCheckpointValues,
   getState,
-  saveState,
   clearState,
-  getHistory
+  getHistory,
 };
