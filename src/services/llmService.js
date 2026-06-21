@@ -9,7 +9,27 @@ import { z } from 'zod';
 import { config } from '../config.js';
 
 let _reasonerModel = null;
-let _chatModel = null;
+const _chatModels = new Map();
+
+const STRUCTURED_OUTPUT_ERROR_MESSAGES = {
+  missing_tool_call: 'Required structured output tool was not called',
+  multiple_tool_calls: 'Expected exactly one structured output tool call',
+  unexpected_tool_call: 'Unexpected structured output tool was called',
+  invalid_tool_arguments: 'Structured output tool arguments are invalid',
+};
+
+export class StructuredOutputError extends Error {
+  constructor(code, { toolName, actualName, count, issues } = {}) {
+    super(STRUCTURED_OUTPUT_ERROR_MESSAGES[code] || 'Structured output failed');
+    this.name = 'StructuredOutputError';
+    this.code = code;
+    this.toolName = toolName;
+
+    if (actualName !== undefined) this.actualName = actualName;
+    if (count !== undefined) this.count = count;
+    if (issues !== undefined) this.issues = issues;
+  }
+}
 
 export function getReasonerModel() {
   if (!_reasonerModel) {
@@ -24,16 +44,22 @@ export function getReasonerModel() {
 }
 
 export function getChatModel(options = {}) {
-  if (!_chatModel) {
-    _chatModel = new ChatOpenAI({
-      modelName: 'deepseek-chat',
+  const modelName = options.modelName ?? 'deepseek-chat';
+  const temperature = options.temperature ?? 0.3;
+  const maxTokens = options.maxTokens ?? 4096;
+  const cacheKey = `${modelName}|t=${temperature}|m=${maxTokens}`;
+
+  if (!_chatModels.has(cacheKey)) {
+    _chatModels.set(cacheKey, new ChatOpenAI({
+      modelName,
       apiKey: config.deepseek.apiKey,
       configuration: { baseURL: config.deepseek.baseUrl },
-      temperature: options.temperature ?? 0.3,
-      maxTokens: options.maxTokens ?? 4096,
-    });
+      temperature,
+      maxTokens,
+    }));
   }
-  return _chatModel;
+
+  return _chatModels.get(cacheKey);
 }
 
 /**
@@ -115,8 +141,67 @@ export async function streamChat(prompt, { onContent } = {}) {
  * @param {string} [options.toolName] - 工具名称（默认 structured_output）
  * @returns {Promise<z.infer<typeof schema>>} 校验后的结构化数据
  */
+export function buildStructuredToolBindingOptions(toolName) {
+  return {
+    tool_choice: {
+      type: 'function',
+      function: { name: toolName },
+    },
+  };
+}
+
+export function parseStructuredToolCall(result, schema, toolName) {
+  const toolCalls = Array.isArray(result?.tool_calls) ? result.tool_calls : [];
+  const invalidToolCalls = Array.isArray(result?.invalid_tool_calls) ? result.invalid_tool_calls : [];
+  const totalCalls = toolCalls.length + invalidToolCalls.length;
+
+  if (totalCalls === 0) {
+    throw new StructuredOutputError('missing_tool_call', { toolName, count: 0 });
+  }
+
+  if (totalCalls > 1) {
+    throw new StructuredOutputError('multiple_tool_calls', { toolName, count: totalCalls });
+  }
+
+  if (invalidToolCalls.length === 1) {
+    const invalidCall = invalidToolCalls[0];
+    throw new StructuredOutputError('invalid_tool_arguments', {
+      toolName,
+      actualName: invalidCall.name,
+      issues: [{
+        path: [],
+        code: 'invalid_tool_call',
+        message: invalidCall.error || 'Tool arguments could not be parsed',
+      }],
+    });
+  }
+
+  const toolCall = toolCalls[0];
+  if (toolCall.name !== toolName) {
+    throw new StructuredOutputError('unexpected_tool_call', {
+      toolName,
+      actualName: toolCall.name,
+    });
+  }
+
+  const parsed = schema.safeParse(toolCall.args);
+  if (!parsed.success) {
+    throw new StructuredOutputError('invalid_tool_arguments', {
+      toolName,
+      actualName: toolCall.name,
+      issues: parsed.error.issues.map(issue => ({
+        path: issue.path,
+        code: issue.code,
+        message: issue.message,
+      })),
+    });
+  }
+
+  return parsed.data;
+}
+
 export async function structuredOutput(prompt, schema, { systemPrompt, toolName = 'structured_output' } = {}) {
-  const model = getChatModel();
+  const model = getChatModel({ temperature: 0 });
 
   const jsonSchema = z.toJSONSchema(schema);
   const tool = {
@@ -128,7 +213,10 @@ export async function structuredOutput(prompt, schema, { systemPrompt, toolName 
     },
   };
 
-  const modelWithTool = model.bindTools([tool]);
+  const modelWithTool = model.bindTools(
+    [tool],
+    buildStructuredToolBindingOptions(toolName)
+  );
 
   const messages = [];
   if (systemPrompt) {
@@ -137,13 +225,7 @@ export async function structuredOutput(prompt, schema, { systemPrompt, toolName 
   messages.push({ role: 'user', content: prompt });
 
   const result = await modelWithTool.invoke(messages);
-
-  const toolCall = result.tool_calls?.[0];
-  if (!toolCall) {
-    throw new Error('LLM did not call structured output tool');
-  }
-
-  return schema.parse(toolCall.args);
+  return parseStructuredToolCall(result, schema, toolName);
 }
 
 /**
@@ -220,10 +302,13 @@ ${prompt}`;
 }
 
 export default {
+  StructuredOutputError,
   getReasonerModel,
   getChatModel,
   streamReasoner,
   streamChat,
+  buildStructuredToolBindingOptions,
+  parseStructuredToolCall,
   structuredOutput,
   streamChatWithThinking,
 };

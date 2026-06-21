@@ -121,22 +121,6 @@ async function loadSpaceContext(state, config) {
 async function collectMissingInfo(state, config) {
   const onEvent = getOnEvent(config);
   logger.info({ step: 'collect_missing_info' }, 'Check missing info');
-  
-  logger.info({
-    tag: '[DEBUG-collect-missing]',
-    goal: state.goal,
-    subjectsCount: state.subjects?.length ?? 0,
-    subjects: state.subjects?.map(subject => ({
-      id: subject.id,
-      name: subject.name,
-      currentLevel: subject.currentLevel,
-      targetLevel: subject.targetLevel,
-      priority: subject.priority
-    })),
-    availability: state.availability,
-    hasExamDate: !!state.goal?.examDate,
-    hasTargetScore: !!state.goal?.targetScore
-  }, 'Collect missing info state');  // TODO  examDate
 
   emitAgentStep(config, { stepId: 'collect_missing_info', status: 'running', title: '检查计划所需信息' });
 
@@ -293,24 +277,32 @@ ${subjects.length > 0
 3. 学习策略建议（重点突破哪些科目，时间如何分配）
 4. 潜在风险及应对措施`;
 
-  let riskAssessment;
-  try {
-    const startTime = Date.now();
+  let analysisSource = analysisPrompt;
+  const startTime = Date.now();
 
+  try {
     const { thinkingText, contentText } = await streamReasoner(analysisPrompt, {
       onThinking: (token) => {
         onEvent({ type: 'thinking', content: token });
       }
     });
 
+    analysisSource = contentText || thinkingText || analysisPrompt;
     const thinkingDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-    onEvent({ type: 'thinking_end', duration: parseFloat(thinkingDuration) });
     logger.info({ step: 'analyze_requirements', thinkingDuration, contentLength: contentText.length, model: 'deepseek-r1' }, 'R1 thinking completed');
+  } catch (error) {
+    logger.warn({
+      step: 'analyze_requirements',
+      err: error.message
+    }, 'R1 analysis failed, continuing with raw study data');
+  } finally {
+    const thinkingDuration = (Date.now() - startTime) / 1000;
+    onEvent({ type: 'thinking_end', duration: thinkingDuration });
+  }
 
-    onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
+  onEvent({ type: 'workflow_step', step: 'analyzing', progress: 60 });
 
-    const analysisSource = contentText || thinkingText || analysisPrompt;
-    const structuredPrompt = `基于以下分析，输出结构化 JSON：
+  const structuredPrompt = `基于以下分析，输出结构化 JSON：
 
 分析内容：
 ${analysisSource}
@@ -326,17 +318,11 @@ ${analysisSource}
   "strategy": "学习策略文本"
 }`;
 
+  let riskAssessment;
+  try {
     riskAssessment = await structuredOutput(structuredPrompt, RiskAssessmentSchema, {
-      systemPrompt: '你是一位学习规划分析师。请输出严格的 JSON 格式，不要添加任何额外文字。'
-    });
-
-    onEvent({ type: 'analysis_result', summary: riskAssessment.prediction, findings: riskAssessment.factors.map(f => f.description), recommendations: riskAssessment.suggestedActions });
-
-    const highPrioritySubjects = (riskAssessment.subjectPriorities || []).filter(s => s.priorityLevel === 'high').map(s => s.subjectName);
-    emitAgentStep(config, {
-      stepId: 'analyze_requirements',
-      status: 'completed',
-      summary: `距离考试 ${availability.examDistance} 天，风险等级：${riskAssessment.level}${highPrioritySubjects.length > 0 ? `，重点：${highPrioritySubjects.join('、')}` : ''}`
+      systemPrompt: '你是一位学习规划分析师。必须调用 risk_assessment 工具返回结果。',
+      toolName: 'risk_assessment'
     });
 
     logger.info({
@@ -346,12 +332,31 @@ ${analysisSource}
       risksCount: riskAssessment.factors.length,
       timeAssessment: riskAssessment.timeAssessment
     }, 'Structured analysis completed');
-
   } catch (error) {
-    logger.error({ step: 'analyze_requirements', err: error.message }, 'R1/structured call failed, fallback to rules');
-
+    logger.warn({
+      step: 'analyze_requirements',
+      structuredErrorCode: error.code,
+      toolName: error.toolName || 'risk_assessment',
+      err: error.message
+    }, 'Structured risk analysis failed, fallback to rules');
     riskAssessment = buildFallbackRiskAssessment(goal, subjects, availability);
   }
+
+  onEvent({
+    type: 'analysis_result',
+    summary: riskAssessment.prediction,
+    findings: riskAssessment.factors.map(f => f.description),
+    recommendations: riskAssessment.suggestedActions
+  });
+
+  const highPrioritySubjects = (riskAssessment.subjectPriorities || [])
+    .filter(s => s.priorityLevel === 'high')
+    .map(s => s.subjectName);
+  emitAgentStep(config, {
+    stepId: 'analyze_requirements',
+    status: 'completed',
+    summary: `距离考试 ${availability.examDistance} 天，风险等级：${riskAssessment.level}${highPrioritySubjects.length > 0 ? `，重点：${highPrioritySubjects.join('、')}` : ''}`
+  });
 
   return {
     riskAssessment,
@@ -383,8 +388,7 @@ async function generateStudyPlan(state, config) {
   let tasks;
   let planStrategy = '';
 
-  try {
-    const planPrompt = `你是一位学习规划专家。根据以下信息，制定学习任务框架：
+  const planPrompt = `你是一位学习规划专家。根据以下信息，制定学习任务框架：
 
 学习目标：${goal.primaryGoal || '未知'}
 考试日期：${goal.examDate || '未设置'}
@@ -412,16 +416,25 @@ ${subjects.map(s => `- ID: ${s.id}，名称：${s.name}，当前水平 ${s.curre
 
 注意：任务 subjectId 必须使用上方科目列表里的 ID。`;
 
+  let planSource = planPrompt;
+  try {
     const { thinkingText, contentText } = await streamChatWithThinking(planPrompt, {
       onThinking: (token) => {
         onEvent({ type: 'thinking', content: token });
       }
     });
 
+    planSource = contentText || thinkingText || planPrompt;
+  } catch (error) {
+    logger.warn({
+      step: 'generate_plan',
+      err: error.message
+    }, 'V3 planning analysis failed, continuing with raw planning data');
+  } finally {
     onEvent({ type: 'thinking_end', duration: 0 });
+  }
 
-    const planSource = contentText || thinkingText || planPrompt;
-    const structuredPlanPrompt = `基于以下规划思考，输出结构化 JSON：
+  const structuredPlanPrompt = `基于以下规划思考，输出结构化 JSON：
 
 ${planSource}
 
@@ -434,8 +447,10 @@ ${planSource}
 
 不要输出 scheduledDate、study_timeline、startDate、endDate、events 或任何 UIBlock 数据。不要为了填充时间重复输出相同或相似任务。`;
 
+  try {
     const taskFramework = await structuredOutput(structuredPlanPrompt, TaskFrameworkSchema, {
-      systemPrompt: '你是一位学习规划专家。请输出严格的 JSON 格式，不要添加任何额外文字。'
+      systemPrompt: '你是一位学习规划专家。必须调用 task_framework 工具返回结果。',
+      toolName: 'task_framework'
     });
 
     planStrategy = taskFramework.strategy;
@@ -443,8 +458,12 @@ ${planSource}
     logger.info({ step: 'generate_plan', taskCount: tasks.length, model: 'deepseek-v3' }, 'LLM framework + deterministic scheduling completed');
 
   } catch (error) {
-    logger.error({ step: 'generate_plan', err: error.message }, 'V3 call failed, fallback to rules');
-
+    logger.warn({
+      step: 'generate_plan',
+      structuredErrorCode: error.code,
+      toolName: error.toolName || 'task_framework',
+      err: error.message
+    }, 'Structured task framework failed, fallback to rules');
     tasks = generateFallbackTasks(subjects, availability);
   }
 

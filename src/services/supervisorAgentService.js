@@ -491,7 +491,11 @@ async function classifyIntent(messages, onEvent) {
     });
     return inferFallbackDecision(messages);
   } catch (error) {
-    logger.warn({ err: error.message }, 'Supervisor model decision failed, using fallback');
+    logger.warn({
+      structuredErrorCode: error.code,
+      toolName: error.toolName || 'supervisor_intent_decision',
+      err: error.message
+    }, 'Supervisor model decision failed, using fallback');
     onEvent({
       type: 'processing',
       stage: 'rule_fallback',
@@ -656,17 +660,6 @@ async function routeInitialPlanning({ decision, agentConfig, studySpaceId, reque
   const executionId = randomUUID();
   const cleanedPlanningSeed = cleanPlanningSeedValue(decision.planningSeed || {}) || {};
   const mergedPlanningSeed = deepMerge(cleanedPlanningSeed, studySpaceContext || {});
-
-  logger.info({
-    tag: '[DEBUG-planning-seed]',
-    hasStudySpaceContext: !!studySpaceContext,
-    studySpaceGoal: studySpaceContext?.goal,
-    decisionGoal: decision.planningSeed?.goal,
-    cleanedDecisionGoal: cleanedPlanningSeed.goal,
-    mergedGoal: mergedPlanningSeed.goal,
-    mergedSubjectsCount: mergedPlanningSeed.subjects?.length ?? 0,
-    mergedAvailability: mergedPlanningSeed.availability
-  }, 'Initial planning seed merged'); // TODO examDate
 
   onEvent({
     type: 'agent_execution_start',
