@@ -65,8 +65,19 @@ export async function toolNode(state, config) {
         throw new Error(`Unsupported tool: ${toolName}`);
       }
 
-      const resultText = await executor(args, state.planData);
+      const resultText = await executor(args, state.planData, {
+        userId: state.userId,
+        studySpaceId: state.studySpaceId,
+        intent: state.intent
+      });
       const parsedResult = safeJsonParse(resultText);
+      if (parsedResult?.uiBlock) {
+        onEvent({
+          type: 'ui_block_update',
+          action: 'add',
+          block: parsedResult.uiBlock
+        });
+      }
       onEvent({
         ...baseEvent,
         status: 'completed',
@@ -114,4 +125,3 @@ export async function toolNode(state, config) {
     messages: toolMessages
   };
 }
-

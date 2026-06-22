@@ -68,6 +68,7 @@ ${JSON.stringify(summary, null, 2)}
 - get_schedule_overview：按日期聚合任务数、总分钟数和待完成数。
 - get_task_details：按 taskId 查询单个任务详情。
 - get_progress_summary：从当前任务快照重新计算完成情况、逾期任务、今日任务和下一批任务。
+- propose_reschedule_tasks：确定性生成并保存待确认的计划调整提案，不直接应用。
 - preview_reschedule_tasks：生成 dry-run 调整预览，不修改真实计划。
 
 只读意图的工具策略：
@@ -82,6 +83,12 @@ ${JSON.stringify(summary, null, 2)}
    - 解释整体安排时使用 get_schedule_overview，必要时使用 search_tasks 补充任务事实。
    - 只能依据目标、科目优先级、风险评估、任务日期和任务优先级作结构性推断。
    - 当前系统没有存储原始排课理由，不得声称读取到了未存储的安排原因；应明确说明解释属于基于现有数据的结构性推断。
+4. adjust_plan
+   - 可先使用 search_tasks 确认用户要移动的任务范围。
+   - 必须使用 propose_reschedule_tasks 生成待确认提案。
+   - 不得调用 preview_reschedule_tasks，也不得声称提案已经应用。
+5. replan
+   - 继续使用 preview_reschedule_tasks，仅返回 dry-run，不创建可确认提案。
 
 通用规则：
 1. 信息不足时直接追问，不要调用不存在的工具。

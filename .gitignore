@@ -60,6 +60,11 @@ coverage/
 *.test.js
 !src/agents/learningPlanAgent/tools/getProgressSummary.test.js
 !src/services/supervisorAgentService.test.js
+!src/services/rescheduleProposalService.test.js
+!src/services/planBlockBuilder.test.js
+!src/services/planChangeSetService.test.js
+!src/services/rescheduleProposalService.test.js
+!src/services/planBlockBuilder.test.js
 
 # 其他缓存
 *.tsbuildinfo

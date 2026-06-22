@@ -1,7 +1,7 @@
 import { AIMessage, SystemMessage } from '@langchain/core/messages';
 import { getChatModel } from '../../../services/llmService.js';
 import { buildSystemPrompt } from '../prompt.js';
-import { agentTools } from '../tools/index.js';
+import { getAgentToolsForIntent } from '../tools/index.js';
 
 function getOnEvent(config) {
   return config?.configurable?.onEvent || (() => {});
@@ -43,7 +43,8 @@ export async function agentNode(state, config) {
   });
 
   try {
-    const model = getChatModel({ temperature: 0.2 }).bindTools(agentTools);
+    const model = getChatModel({ temperature: 0.2 })
+      .bindTools(getAgentToolsForIntent(state.intent));
     const systemPrompt = buildSystemPrompt({
       planData: state.planData,
       intent: state.intent,
@@ -89,4 +90,3 @@ export async function agentNode(state, config) {
     };
   }
 }
-

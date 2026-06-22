@@ -1,4 +1,5 @@
 import * as planPersistenceService from '../services/planPersistenceService.js';
+import * as planChangeSetService from '../services/planChangeSetService.js';
 import { PersistenceError } from '../services/planPersistenceService.js';
 
 function sendSuccess(res, data, status = 200) {
@@ -125,6 +126,43 @@ export async function deletePlansBySpace(req, res) {
   }
 }
 
+export async function getPendingPlanChangeSet(req, res) {
+  try {
+    const data = await planChangeSetService.getPendingChangeSet(
+      req.userId,
+      req.params.spaceId
+    );
+    return sendSuccess(res, data);
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
+export async function applyPlanChangeSet(req, res) {
+  try {
+    const data = await planChangeSetService.applyChangeSet(
+      req.userId,
+      req.params.changeSetId,
+      req.body
+    );
+    return sendSuccess(res, data);
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
+export async function rejectPlanChangeSet(req, res) {
+  try {
+    const data = await planChangeSetService.rejectChangeSet(
+      req.userId,
+      req.params.changeSetId
+    );
+    return sendSuccess(res, data);
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
 export default {
   createPlan,
   activatePlan,
@@ -134,4 +172,7 @@ export default {
   upsertExecution,
   getLatestExecutionBySpace,
   deletePlansBySpace,
+  getPendingPlanChangeSet,
+  applyPlanChangeSet,
+  rejectPlanChangeSet,
 };

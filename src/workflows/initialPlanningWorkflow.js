@@ -16,7 +16,7 @@ import { streamReasoner, streamChat, structuredOutput, streamChatWithThinking } 
 import { RiskAssessmentSchema, TaskFrameworkSchema } from '../types/llmSchemas.js';
 import { logger } from '../logger/index.js';
 import { deterministicallyScheduleTasks } from '../services/studyScheduler.js';
-import { buildStudyTimeline } from '../services/studyTimelineBuilder.js';
+import { buildPlanBlocks } from '../services/planBlockBuilder.js';
 import {
   buildFinalizedCheckpointUpdate,
   hydrateFinalizedWorkflowState,
@@ -518,117 +518,16 @@ async function buildUIBlocks(state, config) {
   logger.info({ step: 'build_ui_blocks' }, 'Building UI blocks');
   emitAgentStep(config, { stepId: 'build_ui_blocks', status: 'running', title: '构建计划展示' });
 
-  const { goal, subjects, tasksSnapshot, availability, riskAssessment } = state;
-  const planId = state.currentPlan?.planId;
-  const blockMeta = {
-    timestamp: Date.now(),
-    version: String(state.currentPlan?.versionNumber || 1),
-    planId,
+  const uiBlocks = buildPlanBlocks({
+    planId: state.currentPlan?.planId,
     planVersion: state.currentPlan?.versionNumber || 1,
-    persisted: false,
-  };
-
-  const tasksByDate = {};
-  for (const task of tasksSnapshot) {
-    if (!tasksByDate[task.scheduledDate]) {
-      tasksByDate[task.scheduledDate] = [];
-    }
-    tasksByDate[task.scheduledDate].push(task);
-  }
-
-  const today = new Date().toISOString().split('T')[0];
-  const examDate = resolveExamDate(goal, availability);
-  const displayedTasks = selectDisplayTasks(tasksSnapshot, today);
-  const displayDate = displayedTasks[0]?.scheduledDate || today;
-  const daysRemaining = calculateDaysRemaining(examDate, availability);
-  const currentScore = calculateWeightedCurrentScore(subjects);
-  const timeline = buildStudyTimeline(tasksSnapshot, today, examDate);
-  const scheduleGroups = buildScheduleGroups(tasksByDate, subjects);
-
-  const uiBlocks = [
-    {
-      id: `${planId}:summary_card`,
-      type: 'summary-card',
-      title: '学习计划概览',
-      order: 1,
-      meta: blockMeta,
-      props: {
-        spaceName: '学习计划',
-        spaceDescription: goal.primaryGoal || '个性化学习计划',
-        primaryGoal: goal.primaryGoal || '完成学习目标',
-        targetScore: goal.targetScore || 85,
-        currentScore,
-        examDate,
-        daysRemaining,
-        overallProgress: 0,
-        subjects: subjects.map(s => ({
-          name: s.name,
-          progress: 0,
-          targetLevel: s.targetLevel
-        }))
-      }
-    },
-    {
-      id: `${planId}:daily_task_list`,
-      type: 'daily-task-list',
-      title: '今日任务',
-      order: 2,
-      meta: blockMeta,
-      props: {
-        date: displayDate,
-        tasks: displayedTasks.map(t => mapTaskForDailyList(t, subjects)),
-        totalTaskCount: tasksSnapshot.length,
-        displayedTaskCount: displayedTasks.length,
-        scheduleGroups,
-        totalDuration: displayedTasks.reduce((sum, t) => sum + t.estimatedMinutes, 0),
-        completionRate: 0
-      }
-    },
-    {
-      id: `${planId}:study_timeline`,
-      type: 'study-timeline',
-      title: '学习时间线',
-      order: 3,
-      meta: blockMeta,
-      props: {
-        startDate: timeline.startDate,
-        endDate: timeline.endDate,
-        events: timeline.events
-      }
-    }
-  ];
-
-  if (riskAssessment && riskAssessment.level !== 'low' && riskAssessment.factors?.length > 0) {
-    uiBlocks.push({
-      id: `${planId}:risk_alert`,
-      type: 'risk-alert',
-      title: '风险提示',
-      order: 4,
-      meta: blockMeta,
-      props: {
-        risks: riskAssessment.factors.map(f => ({
-          type: mapRiskType(f.type),
-          severity: f.severity >= 7 ? 'high' : f.severity >= 4 ? 'medium' : 'low',
-          message: f.description,
-          suggestion: riskAssessment.suggestedActions?.[0] || ''
-        }))
-      }
-    });
-  }
-
-  const actionBarActions = [];
-  if (actionBarActions.length > 0) {
-    uiBlocks.push({
-      id: `${planId}:action_bar`,
-      type: 'action-bar',
-      title: '操作选项',
-      order: 99,
-      meta: blockMeta,
-      props: {
-        actions: actionBarActions
-      }
-    });
-  }
+    goal: state.goal,
+    subjects: state.subjects,
+    availability: state.availability,
+    tasksSnapshot: state.tasksSnapshot,
+    riskAssessment: state.riskAssessment,
+    persisted: false
+  });
 
   const persistence = await persistFinalizedWorkflowPlan(state, uiBlocks);
   const emittedBlocks = uiBlocks.map(block => ({

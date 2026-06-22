@@ -213,28 +213,30 @@ async function replaceBlocks(client, userId, planId, blocks) {
   }
 }
 
+export async function savePlanSnapshotWithClient(client, userId, snapshot) {
+  if (snapshot.plan.status !== 'archived') {
+    await archiveCurrentPlans(
+      client,
+      userId,
+      snapshot.plan.spaceId,
+      snapshot.plan.id,
+      snapshot.plan.updatedAt
+    );
+  }
+
+  await upsertPlan(client, userId, snapshot.plan);
+  await replaceTasks(client, userId, snapshot.plan.id, snapshot.tasks);
+  await replaceBlocks(client, userId, snapshot.plan.id, snapshot.blocks);
+  return loadPlanDetails(client, userId, snapshot.plan.id);
+}
+
 export async function savePlanSnapshot(userId, snapshot) {
   const pool = getDatabasePool();
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-
-    if (snapshot.plan.status !== 'archived') {
-      await archiveCurrentPlans(
-        client,
-        userId,
-        snapshot.plan.spaceId,
-        snapshot.plan.id,
-        snapshot.plan.updatedAt
-      );
-    }
-
-    await upsertPlan(client, userId, snapshot.plan);
-    await replaceTasks(client, userId, snapshot.plan.id, snapshot.tasks);
-    await replaceBlocks(client, userId, snapshot.plan.id, snapshot.blocks);
-
-    const result = await loadPlanDetails(client, userId, snapshot.plan.id);
+    const result = await savePlanSnapshotWithClient(client, userId, snapshot);
     await client.query('COMMIT');
     return result;
   } catch (error) {
