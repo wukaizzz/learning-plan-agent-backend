@@ -65,6 +65,7 @@ coverage/
 !src/services/planChangeSetService.test.js
 !src/services/rescheduleProposalService.test.js
 !src/services/planBlockBuilder.test.js
+!src/db/reliability.test.js
 
 # 其他缓存
 *.tsbuildinfo

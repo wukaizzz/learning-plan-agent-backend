@@ -82,6 +82,7 @@ export const config = Object.freeze({
     apiKey: requireEnv('DEEPSEEK_API_KEY'),
     baseUrl: optionalEnv('DEEPSEEK_API_URL', 'https://api.deepseek.com')
       .replace('/chat/completions', ''),
+    reasonerTimeoutMillis: optionalIntEnv('DEEPSEEK_REASONER_TIMEOUT_MS', 60000),
   },
   ark: {
     apiKey: optionalEnv('ARK_API_KEY'),

@@ -1,4 +1,5 @@
 import { getDatabasePool, query } from '../db/pool.js';
+import { safeRollback } from '../db/reliability.js';
 
 function mapPlan(row) {
   if (!row) return null;
@@ -233,6 +234,7 @@ export async function savePlanSnapshotWithClient(client, userId, snapshot) {
 export async function savePlanSnapshot(userId, snapshot) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
 
   try {
     await client.query('BEGIN');
@@ -240,16 +242,17 @@ export async function savePlanSnapshot(userId, snapshot) {
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
 export async function activatePlan(userId, planId, updatedAt) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
 
   try {
     await client.query('BEGIN');
@@ -277,10 +280,10 @@ export async function activatePlan(userId, planId, updatedAt) {
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -318,6 +321,7 @@ export async function getPlanById(userId, planId) {
 export async function updateTaskStatus(userId, taskId, status, updatedAt) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
 
   try {
     await client.query('BEGIN');
@@ -345,16 +349,17 @@ export async function updateTaskStatus(userId, taskId, status, updatedAt) {
     await client.query('COMMIT');
     return mapTask(task);
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
 export async function deletePlansBySpace(userId, spaceId) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
 
   try {
     await client.query('BEGIN');
@@ -380,10 +385,10 @@ export async function deletePlansBySpace(userId, spaceId) {
     await client.query('COMMIT');
     return countsResult.rows[0];
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 

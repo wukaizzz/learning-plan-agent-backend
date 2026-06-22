@@ -2,6 +2,8 @@
 
 import * as planRepository from '../repositories/planRepository.js';
 import * as agentExecutionRepository from '../repositories/agentExecutionRepository.js';
+import { retryTransientDatabaseOperation } from '../db/reliability.js';
+import { logger } from '../logger/index.js';
 
 const PLAN_STATUSES = new Set(['draft', 'active', 'paused', 'completed', 'archived']);
 const TASK_TYPES = new Set(['study', 'practice', 'review']);
@@ -227,11 +229,23 @@ export async function getPlanById(userId, planId) {
 }
 
 export async function updateTaskStatus(userId, taskId, status) {
-  const result = await planRepository.updateTaskStatus(
-    userId,
-    requireString(taskId, 'taskId'),
-    requireEnum(status, TASK_STATUSES, 'status'),
-    Date.now()
+  const normalizedTaskId = requireString(taskId, 'taskId');
+  const normalizedStatus = requireEnum(status, TASK_STATUSES, 'status');
+  const updatedAt = Date.now();
+  const result = await retryTransientDatabaseOperation(
+    () => planRepository.updateTaskStatus(
+      userId,
+      normalizedTaskId,
+      normalizedStatus,
+      updatedAt
+    ),
+    {
+      onRetry: error => logger.warn({
+        code: error.code,
+        err: error.message,
+        taskId: normalizedTaskId,
+      }, 'Retrying task status update after transient database error'),
+    }
   );
 
   if (!result) {

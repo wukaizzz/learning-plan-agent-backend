@@ -254,7 +254,12 @@ async function analyzeStudyRequirements(state, config) {
   const { goal, subjects, availability } = state;
 
   onEvent({ type: 'workflow_step', step: 'analyzing', progress: 40 });
-  emitAgentStep(config, { stepId: 'analyze_requirements', status: 'running', title: '分析学习需求' });
+  emitAgentStep(config, {
+    stepId: 'analyze_requirements',
+    status: 'running',
+    title: '分析学习需求',
+    summary: '正在分析学习目标、科目和可用时间。'
+  });
 
   const analysisPrompt = `你是一位专业的学习规划分析师。请深入分析以下学生的学习情况：
 
@@ -278,6 +283,22 @@ ${subjects.length > 0
 
   let analysisSource = analysisPrompt;
   const startTime = Date.now();
+  const progressTimers = [
+    setTimeout(() => {
+      emitAgentStep(config, {
+        stepId: 'analyze_requirements',
+        status: 'running',
+        summary: '深度分析仍在进行，正在等待分析结果。'
+      });
+    }, 20000),
+    setTimeout(() => {
+      emitAgentStep(config, {
+        stepId: 'analyze_requirements',
+        status: 'running',
+        summary: '分析耗时较长，若仍未完成将自动切换快速分析。'
+      });
+    }, 40000)
+  ];
 
   try {
     const { thinkingText, contentText } = await streamReasoner(analysisPrompt, {
@@ -292,9 +313,18 @@ ${subjects.length > 0
   } catch (error) {
     logger.warn({
       step: 'analyze_requirements',
+      errorCode: error.code,
       err: error.message
     }, 'R1 analysis failed, continuing with raw study data');
+    emitAgentStep(config, {
+      stepId: 'analyze_requirements',
+      status: 'running',
+      summary: error.code === 'REASONER_TIMEOUT'
+        ? '深度分析响应较慢，已切换快速分析。'
+        : '深度分析暂不可用，已切换快速分析。'
+    });
   } finally {
+    progressTimers.forEach(clearTimeout);
     const thinkingDuration = (Date.now() - startTime) / 1000;
     onEvent({ type: 'thinking_end', duration: thinkingDuration });
   }

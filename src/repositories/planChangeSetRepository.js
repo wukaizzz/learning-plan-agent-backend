@@ -1,4 +1,5 @@
 import { getDatabasePool, query } from '../db/pool.js';
+import { safeRollback } from '../db/reliability.js';
 
 function mapChangeSet(row) {
   if (!row) return null;
@@ -92,6 +93,7 @@ export async function rejectChangeSet(userId, changeSetId, now = Date.now()) {
 export async function withLockedChangeSet(userId, changeSetId, callback) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     const changeResult = await client.query(
@@ -105,10 +107,10 @@ export async function withLockedChangeSet(userId, changeSetId, callback) {
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 

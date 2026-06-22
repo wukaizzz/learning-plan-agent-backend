@@ -5,8 +5,10 @@ import { z } from 'zod';
 process.env.DEEPSEEK_API_KEY ||= 'test-api-key';
 
 const {
+  ReasonerTimeoutError,
   StructuredOutputError,
   buildStructuredToolBindingOptions,
+  consumeReasonerStream,
   getChatModel,
   parseStructuredToolCall,
 } = await import('./llmService.js');
@@ -131,6 +133,83 @@ test('builds a named tool choice for structured output', () => {
         type: 'function',
         function: { name: 'risk_assessment' },
       },
+    }
+  );
+});
+
+test('consumes complete reasoner output before the deadline', async () => {
+  const thinkingTokens = [];
+  const contentTokens = [];
+  const result = await consumeReasonerStream(
+    async function* () {
+      yield {
+        additional_kwargs: { reasoning_content: '分析中' },
+        content: '',
+      };
+      yield {
+        additional_kwargs: {},
+        content: '分析完成',
+      };
+    },
+    {
+      timeoutMillis: 100,
+      onThinking: token => thinkingTokens.push(token),
+      onContent: token => contentTokens.push(token),
+    }
+  );
+
+  assert.deepEqual(result, {
+    thinkingText: '分析中',
+    contentText: '分析完成',
+  });
+  assert.deepEqual(thinkingTokens, ['分析中']);
+  assert.deepEqual(contentTokens, ['分析完成']);
+});
+
+test('aborts a stalled reasoner stream at the configured deadline', async () => {
+  let receivedSignal;
+  let resolveStream;
+  const stalledStream = new Promise(resolve => {
+    resolveStream = resolve;
+  });
+
+  await assert.rejects(
+    consumeReasonerStream(
+      signal => {
+        receivedSignal = signal;
+        return stalledStream;
+      },
+      { timeoutMillis: 10 }
+    ),
+    error => {
+      assert.ok(error instanceof ReasonerTimeoutError);
+      assert.equal(error.code, 'REASONER_TIMEOUT');
+      assert.equal(error.timeoutMillis, 10);
+      return true;
+    }
+  );
+
+  assert.equal(receivedSignal.aborted, true);
+  resolveStream((async function* () {})());
+});
+
+test('normalizes provider timeout errors as reasoner timeouts', async () => {
+  const providerError = Object.assign(new Error('Request timed out'), {
+    name: 'APIConnectionTimeoutError',
+  });
+
+  await assert.rejects(
+    consumeReasonerStream(
+      async () => {
+        throw providerError;
+      },
+      { timeoutMillis: 100 }
+    ),
+    error => {
+      assert.ok(error instanceof ReasonerTimeoutError);
+      assert.equal(error.code, 'REASONER_TIMEOUT');
+      assert.strictEqual(error.cause, providerError);
+      return true;
     }
   );
 });

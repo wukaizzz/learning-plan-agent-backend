@@ -31,6 +31,25 @@ export class StructuredOutputError extends Error {
   }
 }
 
+export class ReasonerTimeoutError extends Error {
+  constructor(timeoutMillis, cause) {
+    super(`DeepSeek reasoner exceeded ${timeoutMillis}ms`, cause ? { cause } : undefined);
+    this.name = 'ReasonerTimeoutError';
+    this.code = 'REASONER_TIMEOUT';
+    this.timeoutMillis = timeoutMillis;
+  }
+}
+
+function isTimeoutLikeError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const name = String(error?.name || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code === 'ETIMEDOUT' ||
+    name.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('timeout');
+}
+
 export function getReasonerModel() {
   if (!_reasonerModel) {
     _reasonerModel = new ChatOpenAI({
@@ -38,6 +57,8 @@ export function getReasonerModel() {
       apiKey: config.deepseek.apiKey,
       configuration: { baseURL: config.deepseek.baseUrl },
       maxTokens: 8192,
+      maxRetries: 0,
+      timeout: config.deepseek.reasonerTimeoutMillis,
     });
   }
   return _reasonerModel;
@@ -73,31 +94,77 @@ export function getChatModel(options = {}) {
  * @param {(token: string) => void} [callbacks.onContent] - 正式回答 token 回调
  * @returns {Promise<{thinkingText: string, contentText: string}>}
  */
-export async function streamReasoner(prompt, { onThinking, onContent } = {}) {
-  const model = getReasonerModel();
+export async function consumeReasonerStream(
+  streamFactory,
+  {
+    onThinking,
+    onContent,
+    timeoutMillis = config.deepseek.reasonerTimeoutMillis,
+  } = {}
+) {
+  const controller = new AbortController();
   let thinkingText = '';
   let contentText = '';
+  let timedOut = false;
+  let timeoutId;
 
-  const stream = await model.stream([
-    { role: 'user', content: prompt },
-  ]);
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new ReasonerTimeoutError(timeoutMillis));
+    }, timeoutMillis);
+  });
 
-  for await (const chunk of stream) {
-    const reasoning = chunk?.additional_kwargs?.reasoning_content;
-    const content = chunk?.content;
+  const consumePromise = (async () => {
+    const stream = await streamFactory(controller.signal);
 
-    if (reasoning) {
-      thinkingText += reasoning;
-      onThinking?.(reasoning);
+    for await (const chunk of stream) {
+      if (timedOut) {
+        throw new ReasonerTimeoutError(timeoutMillis);
+      }
+
+      const reasoning = chunk?.additional_kwargs?.reasoning_content;
+      const content = chunk?.content;
+
+      if (reasoning) {
+        thinkingText += reasoning;
+        onThinking?.(reasoning);
+      }
+
+      if (content) {
+        contentText += content;
+        onContent?.(content);
+      }
     }
 
-    if (content) {
-      contentText += content;
-      onContent?.(content);
+    return { thinkingText, contentText };
+  })();
+
+  try {
+    return await Promise.race([consumePromise, timeoutPromise]);
+  } catch (error) {
+    if (error instanceof ReasonerTimeoutError) {
+      throw error;
     }
+    if (timedOut || isTimeoutLikeError(error)) {
+      throw new ReasonerTimeoutError(timeoutMillis, error);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
+}
 
-  return { thinkingText, contentText };
+export async function streamReasoner(prompt, callbacks = {}) {
+  const model = getReasonerModel();
+  return consumeReasonerStream(
+    signal => model.stream(
+      [{ role: 'user', content: prompt }],
+      { signal }
+    ),
+    callbacks
+  );
 }
 
 /**
@@ -303,8 +370,10 @@ ${prompt}`;
 
 export default {
   StructuredOutputError,
+  ReasonerTimeoutError,
   getReasonerModel,
   getChatModel,
+  consumeReasonerStream,
   streamReasoner,
   streamChat,
   buildStructuredToolBindingOptions,

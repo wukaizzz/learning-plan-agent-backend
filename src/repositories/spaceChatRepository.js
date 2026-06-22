@@ -1,4 +1,5 @@
 import { getDatabasePool, query } from '../db/pool.js';
+import { safeRollback } from '../db/reliability.js';
 
 function mapSpace(row) {
   if (!row) return null;
@@ -205,6 +206,7 @@ export async function restoreSpace(userId, spaceId, now) {
 export async function permanentlyDeleteSpace(userId, spaceId) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     const counts = await client.query(
@@ -228,10 +230,10 @@ export async function permanentlyDeleteSpace(userId, spaceId) {
     await client.query('COMMIT');
     return counts.rows[0];
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -310,16 +312,17 @@ export async function saveSessionWithExecutor(executor, userId, snapshot) {
 export async function saveSession(userId, snapshot) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     const result = await saveSessionWithExecutor(client, userId, snapshot);
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -371,6 +374,7 @@ export async function deleteSession(userId, sessionId) {
 export async function importLocalData(userId, spaces, sessions) {
   const pool = getDatabasePool();
   const client = await pool.connect();
+  let destroyClient = false;
   const summary = {
     spaces: { imported: 0, updated: 0, skipped: 0 },
     sessions: { imported: 0, updated: 0, skipped: 0 },
@@ -388,10 +392,10 @@ export async function importLocalData(userId, spaces, sessions) {
     await client.query('COMMIT');
     return summary;
   } catch (error) {
-    await client.query('ROLLBACK');
+    destroyClient = await safeRollback(client, error);
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 

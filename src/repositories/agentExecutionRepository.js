@@ -1,4 +1,6 @@
 import { query } from '../db/pool.js';
+import { retryTransientDatabaseOperation } from '../db/reliability.js';
+import { logger } from '../logger/index.js';
 
 function mapExecution(row) {
   if (!row) return null;
@@ -56,16 +58,27 @@ export async function upsertExecution(userId, execution) {
 }
 
 export async function getLatestExecutionBySpace(userId, spaceId) {
-  const result = await query(
-    `SELECT *
-     FROM public.agent_executions
-     WHERE user_id = $1 AND space_id = $2
-     ORDER BY updated_at_ms DESC
-     LIMIT 1`,
-    [userId, spaceId]
-  );
+  return retryTransientDatabaseOperation(
+    async () => {
+      const result = await query(
+        `SELECT *
+         FROM public.agent_executions
+         WHERE user_id = $1 AND space_id = $2
+         ORDER BY updated_at_ms DESC
+         LIMIT 1`,
+        [userId, spaceId]
+      );
 
-  return mapExecution(result.rows[0]);
+      return mapExecution(result.rows[0]);
+    },
+    {
+      onRetry: error => logger.warn({
+        code: error.code,
+        err: error.message,
+        spaceId,
+      }, 'Retrying latest agent execution query after transient database error'),
+    }
+  );
 }
 
 export default {
