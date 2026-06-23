@@ -1,5 +1,6 @@
 import { ToolMessage } from '@langchain/core/messages';
 import { toolExecutors } from '../tools/index.js';
+import { buildScheduleTaskListBlock } from '../tools/getScheduleOverview.js';
 
 function getOnEvent(config) {
   return config?.configurable?.onEvent || (() => {});
@@ -71,11 +72,15 @@ export async function toolNode(state, config) {
         intent: state.intent
       });
       const parsedResult = safeJsonParse(resultText);
-      if (parsedResult?.uiBlock) {
+      const scheduleBlock = toolName === 'get_schedule_overview' && parsedResult?.range
+        ? buildScheduleTaskListBlock(parsedResult, { toolCallId })
+        : null;
+      const uiBlock = scheduleBlock || parsedResult?.uiBlock;
+      if (uiBlock) {
         onEvent({
           type: 'ui_block_update',
           action: 'add',
-          block: parsedResult.uiBlock
+          block: uiBlock
         });
       }
       onEvent({

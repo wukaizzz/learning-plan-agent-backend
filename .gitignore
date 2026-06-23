@@ -59,6 +59,8 @@ coverage/
 .nyc_output/
 *.test.js
 !src/agents/learningPlanAgent/tools/getProgressSummary.test.js
+!src/agents/learningPlanAgent/tools/getScheduleOverview.test.js
+!src/agents/learningPlanAgent/nodes/toolNode.test.js
 !src/services/supervisorAgentService.test.js
 !src/services/rescheduleProposalService.test.js
 !src/services/planBlockBuilder.test.js

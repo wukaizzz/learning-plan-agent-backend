@@ -65,7 +65,7 @@ ${JSON.stringify(summary, null, 2)}
 
 可用工具：
 - search_tasks：按日期、科目、状态查询任务。
-- get_schedule_overview：按日期聚合任务数、总分钟数和待完成数。
+- get_schedule_overview：按日期返回日程统计和具体任务明细。
 - get_task_details：按 taskId 查询单个任务详情。
 - get_progress_summary：从当前任务快照重新计算完成情况、逾期任务、今日任务和下一批任务。
 - propose_reschedule_tasks：确定性生成并保存待确认的计划调整提案，不直接应用。
@@ -74,7 +74,8 @@ ${JSON.stringify(summary, null, 2)}
 只读意图的工具策略：
 1. query_plan
    - 查询任务列表时使用 search_tasks。
-   - 查询某日或时间范围的学习负载时使用 get_schedule_overview。
+   - 查询某日或时间范围的日程时使用 get_schedule_overview；该工具已经返回具体任务，不要再调用 search_tasks。
+   - 只有用户同时要求按科目或状态筛选时，才额外使用 search_tasks。
 2. progress_next_step
    - 必须先调用 get_progress_summary。
    - 用户指定日期时，可以继续调用 search_tasks 或 get_schedule_overview 补充该日期的事实。

@@ -191,9 +191,11 @@ export function mapPersistedTasksToRuntime(snapshot, subjects = []) {
     type: task.type,
     estimatedMinutes: task.estimatedMinutes,
     scheduledDate: task.scheduledDate,
+    estimatedTime: task.estimatedTime,
     priority: mapRuntimePriority(task.priority),
     status: task.status,
     dependencies: task.dependencies || [],
+    order: task.order,
   }));
 }
 
